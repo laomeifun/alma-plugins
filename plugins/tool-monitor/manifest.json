@@ -1,0 +1,42 @@
+{
+    "id": "tool-monitor",
+    "name": "Tool Monitor",
+    "version": "1.0.0",
+    "description": "Monitor and track all tool executions with statistics and performance metrics",
+    "author": {
+        "name": "Alma Team"
+    },
+    "main": "main.js",
+    "engines": {
+        "alma": "^0.1.0"
+    },
+    "type": "ui",
+    "activationEvents": ["onStartup"],
+    "contributes": {
+        "commands": [
+            {
+                "id": "toolMonitor.showStats",
+                "title": "Show Tool Statistics"
+            },
+            {
+                "id": "toolMonitor.reset",
+                "title": "Reset Tool Statistics"
+            }
+        ],
+        "configuration": {
+            "title": "Tool Monitor",
+            "properties": {
+                "toolMonitor.showInStatusBar": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show tool statistics in status bar"
+                },
+                "toolMonitor.logToConsole": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Log tool executions to console"
+                }
+            }
+        }
+    }
+}
