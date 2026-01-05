@@ -133,24 +133,48 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     };
 
     // Extract tool calls from message content
-    // Tool parts have type like "tool-Write", "tool-Recall", etc.
+    // Tool parts can have different formats:
+    // 1. type: "tool-{toolName}" (e.g., "tool-web_search", "tool-Write")
+    // 2. type: "tool-call" with title field containing command info
     const extractToolCallsFromMessage = (content: unknown): string[] => {
         const tools: string[] = [];
 
         if (!content || typeof content !== 'object') return tools;
 
-        const msg = content as { parts?: Array<{ type?: string; toolName?: string }> };
+        const msg = content as {
+            parts?: Array<{
+                type?: string;
+                toolName?: string;
+                title?: string;
+                toolCallId?: string;
+            }>;
+        };
         if (!msg.parts || !Array.isArray(msg.parts)) return tools;
 
         for (const part of msg.parts) {
-            // Tool types are formatted as "tool-{toolName}" (e.g., "tool-Write", "tool-Recall")
-            if (part.type?.startsWith('tool-')) {
-                // Extract tool name from type (e.g., "tool-Write" -> "Write")
-                // Or use toolName property if available
+            if (!part.type) continue;
+
+            // Format 1: type is "tool-{toolName}" (e.g., "tool-web_search")
+            if (part.type.startsWith('tool-') && part.type !== 'tool-call') {
                 const toolName = part.toolName || part.type.slice(5); // 5 = length of "tool-"
                 if (toolName) {
                     tools.push(toolName);
                 }
+            }
+            // Format 2: type is "tool-call" - extract from title or mark as generic tool call
+            else if (part.type === 'tool-call') {
+                // Title usually contains the command like "`cat README.md`"
+                // We'll count it as a "shell" or "execute" tool
+                if (part.title) {
+                    // Extract tool type from title if it looks like a command
+                    tools.push('execute');
+                } else {
+                    tools.push('tool-call');
+                }
+            }
+            // Format 3: type is "dynamic-tool" with toolName property
+            else if (part.type === 'dynamic-tool' && part.toolName) {
+                tools.push(part.toolName);
             }
         }
 
