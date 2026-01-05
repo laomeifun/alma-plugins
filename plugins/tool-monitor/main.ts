@@ -133,17 +133,24 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     };
 
     // Extract tool calls from message content
+    // Tool parts have type like "tool-Write", "tool-Recall", etc.
     const extractToolCallsFromMessage = (content: unknown): string[] => {
         const tools: string[] = [];
 
         if (!content || typeof content !== 'object') return tools;
 
-        const msg = content as { parts?: Array<{ type: string; toolName?: string }> };
+        const msg = content as { parts?: Array<{ type?: string; toolName?: string }> };
         if (!msg.parts || !Array.isArray(msg.parts)) return tools;
 
         for (const part of msg.parts) {
-            if (part.type === 'tool-invocation' && part.toolName) {
-                tools.push(part.toolName);
+            // Tool types are formatted as "tool-{toolName}" (e.g., "tool-Write", "tool-Recall")
+            if (part.type?.startsWith('tool-')) {
+                // Extract tool name from type (e.g., "tool-Write" -> "Write")
+                // Or use toolName property if available
+                const toolName = part.toolName || part.type.slice(5); // 5 = length of "tool-"
+                if (toolName) {
+                    tools.push(toolName);
+                }
             }
         }
 
