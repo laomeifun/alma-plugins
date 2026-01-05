@@ -308,7 +308,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 }
             }
 
-            lines.push('', '(Click the status bar item for details)');
             statusItem.tooltip = lines.join('\n');
         }
 
