@@ -1,0 +1,76 @@
+{
+    "$schema": "./registry.schema.json",
+    "version": "1.0.0",
+    "lastUpdated": "2026-01-05T00:00:00Z",
+    "plugins": [
+        {
+            "id": "hello-world",
+            "name": "Hello World",
+            "version": "1.0.0",
+            "description": "A simple example plugin that demonstrates basic plugin structure",
+            "author": {
+                "name": "Alma Team",
+                "email": "hello@alma.now"
+            },
+            "type": ["tool"],
+            "tags": ["example", "starter", "tool"],
+            "repository": "https://github.com/yetone/alma-plugins",
+            "path": "plugins/hello-world",
+            "downloads": 0,
+            "rating": 0,
+            "featured": false
+        },
+        {
+            "id": "token-counter",
+            "name": "Token Counter",
+            "version": "1.0.0",
+            "description": "Displays token count and estimated cost in the status bar",
+            "author": {
+                "name": "Alma Team",
+                "email": "hello@alma.now"
+            },
+            "type": ["ui"],
+            "tags": ["tokens", "cost", "status-bar", "utility"],
+            "repository": "https://github.com/yetone/alma-plugins",
+            "path": "plugins/token-counter",
+            "downloads": 0,
+            "rating": 0,
+            "featured": true
+        },
+        {
+            "id": "catppuccin-theme",
+            "name": "Catppuccin Theme",
+            "version": "1.0.0",
+            "description": "A soothing pastel theme for Alma, based on the popular Catppuccin color palette",
+            "author": {
+                "name": "Alma Team",
+                "email": "hello@alma.now"
+            },
+            "type": ["theme"],
+            "tags": ["theme", "catppuccin", "pastel", "dark", "light"],
+            "repository": "https://github.com/yetone/alma-plugins",
+            "path": "plugins/catppuccin-theme",
+            "homepage": "https://github.com/catppuccin/catppuccin",
+            "downloads": 0,
+            "rating": 0,
+            "featured": true
+        },
+        {
+            "id": "prompt-enhancer",
+            "name": "Prompt Enhancer",
+            "version": "1.0.0",
+            "description": "Automatically enhances prompts with additional context and instructions for better AI responses",
+            "author": {
+                "name": "Alma Team",
+                "email": "hello@alma.now"
+            },
+            "type": ["transform"],
+            "tags": ["prompt", "enhancement", "transform", "ai"],
+            "repository": "https://github.com/yetone/alma-plugins",
+            "path": "plugins/prompt-enhancer",
+            "downloads": 0,
+            "rating": 0,
+            "featured": false
+        }
+    ]
+}
