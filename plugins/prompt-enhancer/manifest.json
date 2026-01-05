@@ -5,7 +5,7 @@
     "description": "Automatically enhances prompts with additional context and instructions for better AI responses",
     "author": {
         "name": "Alma Team",
-        "email": "hello@alma.dev"
+        "email": "hello@alma.now"
     },
     "main": "main.js",
     "engines": {

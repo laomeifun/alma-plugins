@@ -5,7 +5,7 @@
     "description": "Displays token count and estimated cost in the status bar",
     "author": {
         "name": "Alma Team",
-        "email": "hello@alma.dev"
+        "email": "hello@alma.now"
     },
     "main": "main.js",
     "engines": {

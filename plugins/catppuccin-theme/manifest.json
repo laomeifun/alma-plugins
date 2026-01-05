@@ -5,7 +5,7 @@
     "description": "A soothing pastel theme for Alma, based on the popular Catppuccin color palette",
     "author": {
         "name": "Alma Team",
-        "email": "hello@alma.dev"
+        "email": "hello@alma.now"
     },
     "homepage": "https://github.com/catppuccin/catppuccin",
     "main": "main.js",

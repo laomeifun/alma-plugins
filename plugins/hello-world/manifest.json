@@ -5,7 +5,7 @@
     "description": "A simple example plugin that demonstrates basic plugin structure",
     "author": {
         "name": "Alma Team",
-        "email": "hello@alma.dev"
+        "email": "hello@alma.now"
     },
     "main": "main.js",
     "engines": {
