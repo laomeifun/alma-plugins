@@ -1,6 +1,6 @@
 # Alma Plugins
 
-Official and example plugins for [Alma](https://github.com/yetone/alma).
+Official and example plugins for [Alma](https://alma.now).
 
 ## Plugin Types
 
