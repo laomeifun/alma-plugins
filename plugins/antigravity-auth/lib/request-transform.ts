@@ -1,18 +1,18 @@
 /**
  * Request/Response Transformation for Antigravity
  *
- * Transforms OpenAI Responses API format requests to Antigravity API format.
- * Alma uses createOpenAI() for all plugin providers, so requests come in
- * OpenAI format and need to be converted to Gemini format for Antigravity.
+ * With sdkType: 'google', Alma uses Google Generative AI SDK directly,
+ * so requests already come in Gemini format. We just need to:
+ * 1. Wrap requests in Antigravity envelope (project, model, request)
+ * 2. Add Claude-specific thinking config
+ * 3. Unwrap response envelope
+ *
+ * This follows the same pattern as opencode-antigravity-auth.
  */
 
 import type {
     AntigravityRequestBody,
     GeminiRequest,
-    GeminiContent,
-    GeminiPart,
-    GeminiTool,
-    GeminiFunctionDeclaration,
     GeminiGenerationConfig,
     HeaderStyle,
     AntigravityHeaders,
@@ -53,14 +53,14 @@ const CLAUDE_THINKING_MAX_OUTPUT_TOKENS = 65536;
 // ============================================================================
 
 /**
- * Check if this is a Generative Language API request or OpenAI Responses API request
+ * Check if this is a Generative Language API request
  */
 export function isGenerativeLanguageRequest(url: string): boolean {
-    return url.includes('generativelanguage.googleapis.com') || url.includes('/responses');
+    return url.includes('generativelanguage.googleapis.com');
 }
 
 /**
- * Extract model from URL
+ * Extract model from URL (e.g., /models/gemini-2.5-pro:generateContent)
  */
 export function extractModelFromUrl(url: string): string | null {
     const match = url.match(/\/models\/([^:/?]+)/);
@@ -71,173 +71,7 @@ export function extractModelFromUrl(url: string): string | null {
  * Detect if this is a streaming request
  */
 export function isStreamingRequest(url: string): boolean {
-    return url.includes(':streamGenerateContent') || url.includes('stream=true');
-}
-
-// ============================================================================
-// OpenAI Responses API to Gemini Format Conversion
-// ============================================================================
-
-/**
- * OpenAI Responses API item types
- */
-interface ResponsesAPIItem {
-    type: string;
-    id?: string;
-    role?: string;
-    content?: string | Array<{ type: string; text?: string }>;
-    call_id?: string;
-    name?: string;
-    arguments?: string;
-    output?: string;
-    status?: string;
-}
-
-/**
- * OpenAI Responses API request body
- */
-interface ResponsesAPIRequestBody {
-    model: string;
-    input?: ResponsesAPIItem[];
-    instructions?: string;
-    tools?: Array<{
-        type: string;
-        name?: string;
-        description?: string;
-        parameters?: Record<string, unknown>;
-    }>;
-    stream?: boolean;
-    max_output_tokens?: number;
-    temperature?: number;
-    top_p?: number;
-}
-
-/**
- * Convert OpenAI Responses API input to Gemini contents format
- */
-function convertInputToContents(input: ResponsesAPIItem[]): {
-    contents: GeminiContent[];
-    systemInstruction?: { parts: Array<{ text: string }> };
-} {
-    const contents: GeminiContent[] = [];
-    let systemInstruction: { parts: Array<{ text: string }> } | undefined;
-
-    for (const item of input) {
-        // Handle system messages
-        if (item.type === 'message' && item.role === 'system') {
-            const text = extractTextFromContent(item.content);
-            if (text) {
-                if (systemInstruction) {
-                    systemInstruction.parts.push({ text });
-                } else {
-                    systemInstruction = { parts: [{ text }] };
-                }
-            }
-            continue;
-        }
-
-        // Handle user messages
-        if (item.type === 'message' && item.role === 'user') {
-            const text = extractTextFromContent(item.content);
-            if (text) {
-                contents.push({
-                    role: 'user',
-                    parts: [{ text }],
-                });
-            }
-            continue;
-        }
-
-        // Handle assistant messages
-        if (item.type === 'message' && item.role === 'assistant') {
-            const text = extractTextFromContent(item.content);
-            if (text) {
-                contents.push({
-                    role: 'model',
-                    parts: [{ text }],
-                });
-            }
-            continue;
-        }
-
-        // Handle function calls
-        if (item.type === 'function_call') {
-            let args: Record<string, unknown> = {};
-            if (item.arguments) {
-                try {
-                    args = JSON.parse(item.arguments);
-                } catch {
-                    // Keep empty args
-                }
-            }
-            contents.push({
-                role: 'model',
-                parts: [{
-                    functionCall: {
-                        name: item.name || 'unknown',
-                        args,
-                        id: item.call_id,
-                    },
-                }],
-            });
-            continue;
-        }
-
-        // Handle function call outputs
-        if (item.type === 'function_call_output') {
-            contents.push({
-                role: 'user',
-                parts: [{
-                    functionResponse: {
-                        name: item.name || 'unknown',
-                        response: { result: item.output || '' },
-                        id: item.call_id,
-                    },
-                }],
-            });
-            continue;
-        }
-    }
-
-    return { contents, systemInstruction };
-}
-
-/**
- * Extract text from content (string or array)
- */
-function extractTextFromContent(content: string | Array<{ type: string; text?: string }> | undefined): string {
-    if (!content) return '';
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-        return content
-            .filter(c => c.type === 'text' || c.type === 'input_text' || c.type === 'output_text')
-            .map(c => c.text || '')
-            .join('\n');
-    }
-    return '';
-}
-
-/**
- * Convert OpenAI tools to Gemini function declarations
- */
-function convertToolsToFunctionDeclarations(tools: ResponsesAPIRequestBody['tools']): GeminiTool[] {
-    if (!tools || tools.length === 0) return [];
-
-    const functionDeclarations: GeminiFunctionDeclaration[] = [];
-
-    for (const tool of tools) {
-        if (tool.type !== 'function') continue;
-
-        functionDeclarations.push({
-            name: tool.name || 'unknown',
-            description: tool.description || '',
-            parameters: tool.parameters,
-        });
-    }
-
-    if (functionDeclarations.length === 0) return [];
-
-    return [{ functionDeclarations }];
+    return url.includes(':streamGenerateContent');
 }
 
 // ============================================================================
@@ -254,7 +88,13 @@ export interface TransformResult {
 }
 
 /**
- * Transform OpenAI Responses API request to Antigravity format.
+ * Transform Gemini SDK request to Antigravity format.
+ *
+ * Since we use sdkType: 'google', requests come directly in Gemini format
+ * from the AI SDK. We just need to:
+ * 1. Extract model from URL
+ * 2. Add Claude-specific thinking config
+ * 3. Wrap in Antigravity envelope
  */
 export function transformRequest(
     originalUrl: string,
@@ -265,102 +105,69 @@ export function transformRequest(
     endpoint: string = PRIMARY_ENDPOINT,
     logger?: { debug: (msg: string, ...args: unknown[]) => void }
 ): TransformResult {
-    let parsed: ResponsesAPIRequestBody;
+    // Parse the Gemini request body
+    let geminiRequest: GeminiRequest;
     try {
-        parsed = JSON.parse(body);
+        geminiRequest = JSON.parse(body);
     } catch {
         throw new Error('Invalid request body');
     }
 
-    const requestedModel = parsed.model || 'unknown';
+    // Extract model from URL
+    const urlModel = extractModelFromUrl(originalUrl);
+    const requestedModel = urlModel || 'unknown';
+
+    // Resolve model with thinking tier
     const { baseModel, thinkingLevel, thinkingBudget } = parseModelWithTier(requestedModel);
     const effectiveModel = baseModel;
 
     logger?.debug(`Model resolution: ${requestedModel} -> ${effectiveModel}, thinking=${thinkingLevel}, budget=${thinkingBudget}`);
+
     const family = getModelFamily(requestedModel);
     const isClaude = family === 'claude';
     const isThinking = isClaudeThinkingModel(requestedModel);
-    const streaming = parsed.stream === true;
+    const streaming = isStreamingRequest(originalUrl);
 
-    // Convert OpenAI Responses API input to Gemini format
-    const input = parsed.input || [];
-    const { contents, systemInstruction } = convertInputToContents(input);
-
-    logger?.debug(`Converted ${input.length} input items to ${contents.length} contents`);
-
-    // Validate contents - must have at least one message
-    if (contents.length === 0 && !systemInstruction) {
-        throw new Error('No valid messages found in request. Input items may have unexpected format.');
-    }
-
-    // Build Gemini request
-    const geminiRequest: GeminiRequest = {
-        contents,
-    };
-
-    // Add system instruction
-    if (systemInstruction) {
-        geminiRequest.systemInstruction = systemInstruction;
-    } else if (parsed.instructions) {
-        // Use instructions field as system instruction
-        geminiRequest.systemInstruction = {
-            parts: [{ text: parsed.instructions }],
-        };
-    }
-
-    // Add thinking hint for Claude thinking models with tools
-    if (isThinking && parsed.tools && parsed.tools.length > 0 && geminiRequest.systemInstruction) {
-        const hint = 'Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer.';
-        geminiRequest.systemInstruction.parts.push({ text: hint });
-    }
-
-    // Convert tools
-    if (parsed.tools && parsed.tools.length > 0) {
-        geminiRequest.tools = convertToolsToFunctionDeclarations(parsed.tools);
-
-        // Set tool config for Claude VALIDATED mode
-        if (isClaude) {
-            geminiRequest.toolConfig = {
-                functionCallingConfig: {
-                    mode: 'VALIDATED',
-                },
-            };
-        }
-    }
-
-    // Build generation config
-    const generationConfig: GeminiGenerationConfig = {};
-
-    if (parsed.max_output_tokens) {
-        generationConfig.maxOutputTokens = parsed.max_output_tokens;
-    }
-    if (parsed.temperature !== undefined) {
-        generationConfig.temperature = parsed.temperature;
-    }
-    if (parsed.top_p !== undefined) {
-        generationConfig.topP = parsed.top_p;
-    }
-
-    // Add thinking config for Claude thinking models
+    // Add Claude-specific thinking config
     if (isThinking && thinkingBudget) {
+        const generationConfig: GeminiGenerationConfig = geminiRequest.generationConfig || {};
+
         generationConfig.thinkingConfig = {
             include_thoughts: true,
             thinking_budget: thinkingBudget,
         };
-        // Ensure maxOutputTokens is large enough
+
+        // Ensure maxOutputTokens is large enough for thinking
         if (!generationConfig.maxOutputTokens || generationConfig.maxOutputTokens <= thinkingBudget) {
             generationConfig.maxOutputTokens = CLAUDE_THINKING_MAX_OUTPUT_TOKENS;
         }
+
+        geminiRequest.generationConfig = generationConfig;
     }
 
-    if (Object.keys(generationConfig).length > 0) {
-        geminiRequest.generationConfig = generationConfig;
+    // Add Claude tool config (VALIDATED mode)
+    if (isClaude && geminiRequest.tools && geminiRequest.tools.length > 0) {
+        geminiRequest.toolConfig = {
+            functionCallingConfig: {
+                mode: 'VALIDATED',
+            },
+        };
+
+        // Add thinking hint for Claude thinking models with tools
+        if (isThinking) {
+            const hint = 'Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer.';
+            if (geminiRequest.systemInstruction) {
+                geminiRequest.systemInstruction.parts.push({ text: hint });
+            } else {
+                geminiRequest.systemInstruction = { parts: [{ text: hint }] };
+            }
+        }
     }
 
     // Add session ID for multi-turn conversations
     geminiRequest.sessionId = `alma-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    // Wrap in Antigravity format
+    // Wrap in Antigravity envelope
     const antigravityBody: AntigravityRequestBody = {
         project: projectId,
         model: effectiveModel,
@@ -369,7 +176,7 @@ export function transformRequest(
         requestId: `alma-${crypto.randomUUID()}`,
     };
 
-    // Build URL
+    // Build Antigravity URL
     const action = streaming ? 'streamGenerateContent' : 'generateContent';
     const url = `${endpoint}/v1internal:${action}${streaming ? '?alt=sse' : ''}`;
 
@@ -407,7 +214,8 @@ export function transformRequest(
 // ============================================================================
 
 /**
- * Transform Antigravity SSE response to OpenAI Responses API format.
+ * Transform Antigravity SSE response.
+ * Unwraps the Antigravity envelope to return standard Gemini format.
  */
 export function transformStreamingResponse(response: Response): Response {
     if (!response.body) {
@@ -443,10 +251,9 @@ export function transformStreamingResponse(response: Response): Response {
 
                 try {
                     const data = JSON.parse(dataStr);
-                    // Unwrap Antigravity envelope and transform to OpenAI format
+                    // Unwrap Antigravity envelope - return the inner response
                     const unwrapped = data.response || data;
-                    const transformed = transformGeminiToOpenAI(unwrapped);
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n`));
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(unwrapped)}\n`));
                 } catch {
                     // Pass through as-is if parsing fails
                     controller.enqueue(encoder.encode(line + '\n'));
@@ -468,67 +275,18 @@ export function transformStreamingResponse(response: Response): Response {
 }
 
 /**
- * Transform Gemini response to OpenAI Responses API format
- */
-function transformGeminiToOpenAI(data: any): any {
-    // Already in OpenAI format
-    if (data.type || data.object) {
-        return data;
-    }
-
-    const candidates = data.candidates || [];
-    if (candidates.length === 0) {
-        return data;
-    }
-
-    const candidate = candidates[0];
-    const content = candidate.content || {};
-    const parts = content.parts || [];
-
-    // Build output items
-    const output: any[] = [];
-
-    for (const part of parts) {
-        if (part.text && !part.thought) {
-            output.push({
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: part.text }],
-            });
-        } else if (part.functionCall) {
-            output.push({
-                type: 'function_call',
-                call_id: part.functionCall.id || `call_${Date.now()}`,
-                name: part.functionCall.name,
-                arguments: JSON.stringify(part.functionCall.args || {}),
-            });
-        }
-    }
-
-    return {
-        type: 'response',
-        output,
-        usage: data.usageMetadata ? {
-            input_tokens: data.usageMetadata.promptTokenCount || 0,
-            output_tokens: data.usageMetadata.candidatesTokenCount || 0,
-        } : undefined,
-    };
-}
-
-/**
- * Transform non-streaming response from Antigravity to OpenAI format.
+ * Transform non-streaming response from Antigravity.
+ * Unwraps the Antigravity envelope to return standard Gemini format.
  */
 export async function transformNonStreamingResponse(response: Response): Promise<Response> {
     const text = await response.text();
 
     try {
         const data = JSON.parse(text);
-
-        // Unwrap Antigravity envelope and transform
+        // Unwrap Antigravity envelope - return the inner response
         const unwrapped = data.response || data;
-        const transformed = transformGeminiToOpenAI(unwrapped);
 
-        return new Response(JSON.stringify(transformed), {
+        return new Response(JSON.stringify(unwrapped), {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,

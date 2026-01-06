@@ -206,6 +206,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         name: 'Antigravity (Google)',
         description: 'Access Claude and Gemini models via your Antigravity subscription',
         authType: 'oauth',
+        sdkType: 'google', // Use Google Generative AI SDK (Gemini format)
 
         async initialize() {
             logger.info('Antigravity provider initialized');
