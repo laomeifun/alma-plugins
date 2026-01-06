@@ -52,35 +52,26 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         async authenticate() {
             try {
                 // Generate authorization URL
-                const { url, verifier, state } = await getAuthorizationUrl();
+                const { url, verifier } = await getAuthorizationUrl();
 
-                // Store verifier and state for code exchange
+                // Store verifier for code exchange
                 await tokenStore.storePendingVerifier(verifier);
-                await tokenStore.storePendingState(state);
 
-                // Open browser for authorization
-                logger.info(`Opening authorization URL: ${url}`);
-                const opened = await ui.openExternal(url);
-                if (!opened) {
-                    logger.warn('Failed to open browser, URL:', url);
-                }
+                // Show notification
+                ui.showNotification('Opening browser for ChatGPT login...', { type: 'info' });
 
-                // Show instructions to user
-                ui.showNotification(
-                    'Browser opened. After login, copy the "code" parameter from the URL bar.',
-                    { type: 'info', duration: 15000 }
-                );
-
-                // Ask user for the authorization code
-                const code = await ui.showInputBox({
-                    title: 'ChatGPT Authorization',
-                    prompt: 'After logging in, the page will show "localhost refused to connect". Copy the "code=xxx" value from the URL bar and paste it here:',
-                    placeholder: 'Paste the code parameter from URL...',
+                // Start OAuth flow with local callback server
+                logger.info('Starting OAuth flow...');
+                const result = await ui.startOAuthFlow({
+                    authUrl: url,
+                    callbackPort: 1455,
+                    callbackPath: '/auth/callback',
+                    timeout: 300000, // 5 minutes
                 });
 
-                if (!code) {
+                if (!result || !result.code) {
                     await tokenStore.clearPendingState();
-                    return { success: false, error: 'Authorization cancelled' };
+                    return { success: false, error: 'Authorization cancelled or timed out' };
                 }
 
                 // Exchange code for tokens
@@ -89,7 +80,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     return { success: false, error: 'No pending authorization. Please try again.' };
                 }
 
-                const tokens = await exchangeCodeForTokens(code, pendingVerifier);
+                const tokens = await exchangeCodeForTokens(result.code, pendingVerifier);
                 await tokenStore.saveTokens(tokens);
                 await tokenStore.clearPendingState();
 
