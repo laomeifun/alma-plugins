@@ -146,10 +146,17 @@ export function transformRequest(
         }
     }
 
-    // Add Claude-specific config
-    // Testing: remove both thinkingConfig and maxOutputTokens override
+    // Add Claude-specific thinking config
+    // IMPORTANT: Claude uses snake_case keys (include_thoughts, thinking_budget)
     if (isThinking && thinkingBudget) {
-        // Don't set any special config for now - testing if basic request works
+        const generationConfig: GeminiGenerationConfig = geminiRequest.generationConfig || {};
+
+        generationConfig.thinkingConfig = {
+            include_thoughts: true,
+            thinking_budget: thinkingBudget,
+        };
+
+        geminiRequest.generationConfig = generationConfig;
     }
 
     // Add thinking hint for Claude thinking models with tools
