@@ -26,6 +26,16 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     logger.info('Chat Suggestions plugin activated!');
 
+    // Create a status bar item to indicate the plugin is active
+    const statusBarItem = ui.createStatusBarItem({
+        id: 'chat-suggestions-status',
+        alignment: 'right',
+        priority: 90,
+    });
+    statusBarItem.text = '💡 Suggestions Active';
+    statusBarItem.tooltip = 'Chat Suggestions is running';
+    statusBarItem.show();
+
     // Get current settings
     const getSettings = () => ({
         enabled: settings.get<boolean>('chatSuggestions.enabled', true),
@@ -117,6 +127,7 @@ ${messages.map((m: Message) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m
     return {
         dispose: () => {
             eventDisposable.dispose();
+            statusBarItem.dispose();
         }
     };
 }
