@@ -115,16 +115,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 throw new Error('Request body must be a string');
             }
 
-            // Determine header style based on model
-            let parsed: any;
-            try {
-                parsed = JSON.parse(body);
-            } catch {
-                throw new Error('Invalid request body JSON');
-            }
+            // Extract model from URL (Gemini SDK puts model in URL, not body)
+            const urlModel = url.match(/\/models\/([^:/?]+)/)?.[1] || '';
 
-            const modelFamily = getModelFamily(parsed.model || '');
+            // Determine header style based on model family
+            // Claude models need 'antigravity' headers, Gemini models use 'gemini-cli' headers
+            const modelFamily = getModelFamily(urlModel);
             const headerStyle = modelFamily === 'claude' ? 'antigravity' : 'gemini-cli';
+
+            logger.debug(`URL model: ${urlModel}, family: ${modelFamily}, headerStyle: ${headerStyle}`);
 
             // Try endpoints with fallback
             let lastError: Error | null = null;
