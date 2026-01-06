@@ -5,15 +5,39 @@
  * via OAuth authentication. This plugin registers a custom provider that
  * handles authentication and API calls to the ChatGPT Codex backend.
  *
+ * IMPORTANT: This follows the same pattern as opencode-openai-codex-auth:
+ * - Plugin returns { apiKey, baseURL, fetch } configuration
+ * - Custom fetch wrapper handles OAuth headers, URL rewriting, etc.
+ * - AI SDK handles all request/response logic using the provided config
+ *
  * DISCLAIMER: This plugin is for personal development use only with your
  * own ChatGPT subscription. Not for commercial resale or multi-user services.
  */
 
 import type { PluginContext, PluginActivation } from 'alma-plugin-api';
 import { TokenStore } from './lib/token-store';
-import { CodexClient } from './lib/codex-api';
 import { getAuthorizationUrl, exchangeCodeForTokens } from './lib/auth';
-import { CODEX_MODELS } from './lib/models';
+import { CODEX_MODELS, getBaseModelId, getReasoningEffort } from './lib/models';
+
+// ============================================================================
+// Constants (matching opencode-openai-codex-auth)
+// ============================================================================
+
+const CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
+const DUMMY_API_KEY = 'chatgpt-oauth';
+
+// OpenAI-specific headers
+const OPENAI_HEADERS = {
+    BETA: 'OpenAI-Beta',
+    ACCOUNT_ID: 'chatgpt-account-id',
+    ORIGINATOR: 'originator',
+} as const;
+
+// URL path segments
+const URL_PATHS = {
+    RESPONSES: '/responses',
+    CODEX_RESPONSES: '/codex/responses',
+} as const;
 
 // ============================================================================
 // Plugin Activation
@@ -28,8 +52,223 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     const tokenStore = new TokenStore(storage.secrets, logger);
     await tokenStore.initialize();
 
-    // Initialize Codex API client
-    const codexClient = new CodexClient(tokenStore, logger);
+    // =========================================================================
+    // Custom Fetch Wrapper (matching opencode-openai-codex-auth pattern)
+    // =========================================================================
+
+    /**
+     * Convert SSE stream to JSON for non-streaming requests (generateText)
+     * This matches the opencode-openai-codex-auth implementation
+     */
+    const convertSseToJson = async (response: Response, headers: Headers): Promise<Response> => {
+        if (!response.body) {
+            throw new Error('Response has no body');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+
+        // Consume the entire stream
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fullText += decoder.decode(value, { stream: true });
+        }
+
+        // Parse SSE events to extract the final response
+        const lines = fullText.split('\n');
+        let finalResponse: unknown = null;
+
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                try {
+                    const data = JSON.parse(line.substring(6));
+                    if (data.type === 'response.done' || data.type === 'response.completed') {
+                        finalResponse = data.response;
+                        break;
+                    }
+                } catch {
+                    // Skip malformed JSON
+                }
+            }
+        }
+
+        if (!finalResponse) {
+            logger.error('Could not find final response in SSE stream');
+            return new Response(fullText, {
+                status: response.status,
+                statusText: response.statusText,
+                headers,
+            });
+        }
+
+        // Return as plain JSON
+        const jsonHeaders = new Headers(headers);
+        jsonHeaders.set('content-type', 'application/json; charset=utf-8');
+
+        return new Response(JSON.stringify(finalResponse), {
+            status: response.status,
+            statusText: response.statusText,
+            headers: jsonHeaders,
+        });
+    };
+
+    /**
+     * Creates a custom fetch function that:
+     * 1. Refreshes OAuth token if needed
+     * 2. Rewrites URLs for Codex backend
+     * 3. Transforms request body for Codex format
+     * 4. Adds OAuth headers
+     * 5. Handles response (SSE→JSON for non-streaming, passthrough for streaming)
+     *
+     * This matches the opencode-openai-codex-auth implementation exactly.
+     */
+    const createCodexFetch = (): typeof globalThis.fetch => {
+        return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+            // Step 1: Get fresh access token
+            const accessToken = await tokenStore.getValidAccessToken();
+            const accountId = tokenStore.getAccountId();
+
+            if (!accountId) {
+                throw new Error('Account ID not found. Please re-authenticate.');
+            }
+
+            // Step 2: Extract URL string
+            let url: string;
+            if (typeof input === 'string') {
+                url = input;
+            } else if (input instanceof URL) {
+                url = input.toString();
+            } else {
+                url = input.url;
+            }
+
+            // Step 3: Rewrite URL for Codex backend: /responses -> /codex/responses
+            const codexUrl = url.replace(URL_PATHS.RESPONSES, URL_PATHS.CODEX_RESPONSES);
+            logger.debug(`Rewriting URL: ${url} -> ${codexUrl}`);
+
+            // Step 4: Transform request body (matching opencode-openai-codex-auth exactly)
+            let body = init?.body;
+            let isStreaming = true; // Default to streaming
+
+            if (body && typeof body === 'string') {
+                try {
+                    const parsed = JSON.parse(body);
+
+                    // Track if this is a streaming request (generateText sends no stream field)
+                    // streamText sends stream=true
+                    isStreaming = parsed.stream === true;
+
+                    // Normalize model name (e.g., gpt-5.2-codex-low -> gpt-5.2-codex)
+                    const originalModel = parsed.model || '';
+                    const normalizedModel = getBaseModelId(originalModel);
+                    const reasoningEffort = getReasoningEffort(originalModel);
+
+                    // Filter and transform input (matching opencode's filterInput function)
+                    // This is CRITICAL for Codex API compatibility:
+                    // 1. Remove item_reference types (AI SDK construct not supported by Codex)
+                    // 2. Strip IDs from all items (required for stateless mode with store=false)
+                    let filteredInput = parsed.input || parsed.messages;
+                    if (Array.isArray(filteredInput)) {
+                        filteredInput = filteredInput
+                            .filter((item: any) => {
+                                // Remove AI SDK constructs not supported by Codex API
+                                if (item.type === 'item_reference') {
+                                    return false;
+                                }
+                                return true;
+                            })
+                            .map((item: any) => {
+                                // Strip IDs from all items (Codex API stateless mode)
+                                if (item.id) {
+                                    const { id, ...itemWithoutId } = item;
+                                    return itemWithoutId;
+                                }
+                                return item;
+                            });
+                    }
+
+                    // Transform to Codex format (matching opencode's transformRequestBody)
+                    const transformedBody: Record<string, any> = {
+                        model: normalizedModel,
+                        store: false, // Required: stateless mode (ChatGPT backend REQUIRES this)
+                        stream: true, // Always stream for Codex (we convert to JSON if needed)
+                        input: filteredInput,
+                        include: ['reasoning.encrypted_content'], // Required for stateless operation
+                        text: {
+                            verbosity: 'medium', // Matches Codex CLI default
+                        },
+                    };
+
+                    // Add reasoning config if not 'none'
+                    if (reasoningEffort !== 'none') {
+                        transformedBody.reasoning = {
+                            effort: reasoningEffort,
+                            summary: 'auto',
+                        };
+                    }
+
+                    // Preserve tools if present
+                    if (parsed.tools) {
+                        transformedBody.tools = parsed.tools;
+                    }
+
+                    // Remove unsupported parameters (matching opencode)
+                    // These are not supported by Codex API
+                    delete transformedBody.max_output_tokens;
+                    delete transformedBody.max_completion_tokens;
+
+                    body = JSON.stringify(transformedBody);
+                    logger.debug(`Transformed request: model=${originalModel}->${normalizedModel}, reasoning=${reasoningEffort}, streaming=${isStreaming}`);
+                } catch (e) {
+                    logger.error('Error transforming request body:', e);
+                }
+            }
+
+            // Step 5: Create headers with OAuth credentials
+            const headers = new Headers(init?.headers ?? {});
+            headers.delete('x-api-key');
+            headers.set('Authorization', `Bearer ${accessToken}`);
+            headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+            headers.set(OPENAI_HEADERS.BETA, 'responses=experimental');
+            headers.set(OPENAI_HEADERS.ORIGINATOR, 'codex_cli_rs');
+            headers.set('accept', 'text/event-stream');
+
+            // Step 6: Make the request
+            const response = await globalThis.fetch(codexUrl, {
+                ...init,
+                body,
+                headers,
+            });
+
+            // Step 7: Handle error response
+            if (!response.ok) {
+                const errorText = await response.text();
+                logger.error(`Codex API error: ${response.status} ${response.statusText}`, errorText);
+                throw new Error(`Codex API error: ${response.status} ${response.statusText}`);
+            }
+
+            // Step 8: Handle success response
+            // For non-streaming requests (generateText), convert SSE to JSON
+            // For streaming requests (streamText), return stream as-is
+            const responseHeaders = new Headers(response.headers);
+            if (!responseHeaders.has('content-type')) {
+                responseHeaders.set('content-type', 'text/event-stream; charset=utf-8');
+            }
+
+            if (!isStreaming) {
+                return await convertSseToJson(response, responseHeaders);
+            }
+
+            // Return streaming response as-is
+            return new Response(response.body, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: responseHeaders,
+            });
+        };
+    };
 
     // =========================================================================
     // Register Provider
@@ -121,8 +360,19 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             }));
         },
 
-        async createChatCompletion(request) {
-            return codexClient.createChatCompletion(request);
+        /**
+         * Returns SDK configuration for AI SDK's createOpenAI().
+         * This follows the opencode-openai-codex-auth pattern:
+         * - apiKey: Dummy key (actual auth via OAuth)
+         * - baseURL: ChatGPT backend URL
+         * - fetch: Custom fetch that handles OAuth headers, URL rewriting, etc.
+         */
+        async getSDKConfig() {
+            return {
+                apiKey: DUMMY_API_KEY,
+                baseURL: CODEX_BASE_URL,
+                fetch: createCodexFetch(),
+            };
         },
     });
 
