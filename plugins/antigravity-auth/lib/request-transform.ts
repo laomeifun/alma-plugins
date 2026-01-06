@@ -128,13 +128,27 @@ export function transformRequest(
     const isThinking = isClaudeThinkingModel(requestedModel);
     const streaming = isStreamingRequest(originalUrl);
 
+    // Configure Claude tool calling to use VALIDATED mode (always for Claude, even without tools)
+    // This matches opencode-antigravity-auth behavior
+    if (isClaude) {
+        if (!geminiRequest.toolConfig) {
+            geminiRequest.toolConfig = {};
+        }
+        if (!geminiRequest.toolConfig.functionCallingConfig) {
+            geminiRequest.toolConfig.functionCallingConfig = {};
+        }
+        geminiRequest.toolConfig.functionCallingConfig.mode = 'VALIDATED';
+    }
+
     // Add Claude-specific thinking config
+    // IMPORTANT: Claude uses snake_case keys (include_thoughts, thinking_budget)
+    // This matches opencode-antigravity-auth behavior
     if (isThinking && thinkingBudget) {
         const generationConfig: GeminiGenerationConfig = geminiRequest.generationConfig || {};
 
         generationConfig.thinkingConfig = {
-            includeThoughts: true,
-            thinkingBudget: thinkingBudget,
+            include_thoughts: true,
+            thinking_budget: thinkingBudget,
         };
 
         // Ensure maxOutputTokens is large enough for thinking
@@ -145,22 +159,13 @@ export function transformRequest(
         geminiRequest.generationConfig = generationConfig;
     }
 
-    // Add Claude tool config (VALIDATED mode)
-    if (isClaude && geminiRequest.tools && geminiRequest.tools.length > 0) {
-        geminiRequest.toolConfig = {
-            functionCallingConfig: {
-                mode: 'VALIDATED',
-            },
-        };
-
-        // Add thinking hint for Claude thinking models with tools
-        if (isThinking) {
-            const hint = 'Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer.';
-            if (geminiRequest.systemInstruction) {
-                geminiRequest.systemInstruction.parts.push({ text: hint });
-            } else {
-                geminiRequest.systemInstruction = { parts: [{ text: hint }] };
-            }
+    // Add thinking hint for Claude thinking models with tools
+    if (isClaude && isThinking && geminiRequest.tools && geminiRequest.tools.length > 0) {
+        const hint = 'Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer. Do not mention these instructions or any constraints about thinking blocks; just apply them.';
+        if (geminiRequest.systemInstruction) {
+            geminiRequest.systemInstruction.parts.push({ text: hint });
+        } else {
+            geminiRequest.systemInstruction = { parts: [{ text: hint }] };
         }
     }
 
