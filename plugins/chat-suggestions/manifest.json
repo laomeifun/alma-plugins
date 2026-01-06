@@ -15,6 +15,15 @@
     "permissions": ["chat:read", "chat:write", "settings:read"],
     "activationEvents": ["onStartup"],
     "contributes": {
+        "components": {
+            "statusBar": [
+                {
+                    "id": "chat-suggestions-status",
+                    "alignment": "right",
+                    "priority": 90
+                }
+            ]
+        },
         "configuration": {
             "title": "Chat Suggestions",
             "properties": {
