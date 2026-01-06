@@ -6,6 +6,7 @@ import type { PluginContext, PluginActivation, Provider, Message } from 'alma-pl
  */
 interface RuntimeProvider extends Provider {
     id: string;
+    name: string;
     createChatCompletion(request: {
         model: string;
         messages: Array<{ role: string; content: string }>;
@@ -52,8 +53,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             }
 
             try {
+                logger.info(`Received message event. Thread: ${input.threadId}, Provider: ${input.providerId}`);
+
                 // Get the thread history
                 const messages = await chat.getMessages(input.threadId);
+                logger.info(`Retrieved ${messages.length} messages from history`);
                 
                 // Prepare the prompt for generating suggestions
                 const prompt = `
@@ -82,13 +86,19 @@ ${messages.map((m: Message) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m
                     return;
                 }
 
+                logger.info(`Selected provider: ${provider.id}`);
+                logger.info(`Provider keys: ${Object.keys(provider).join(', ')}`);
+                logger.info(`Has createChatCompletion: ${typeof provider.createChatCompletion}`);
+
                 // Use the provider to generate suggestions
                 // Note: We are casting to RuntimeProvider assuming the method exists at runtime
                 if (typeof provider.createChatCompletion === 'function') {
+                    logger.info('Calling createChatCompletion...');
                     const response = await provider.createChatCompletion({
                         model: input.model,
                         messages: [{ role: 'user', content: prompt }]
                     });
+                    logger.info('Received response from createChatCompletion');
 
                     if (response && response.content) {
                         const suggestions = response.content.split('\n').filter(s => s.trim().length > 0);
@@ -96,6 +106,7 @@ ${messages.map((m: Message) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m
                         
                         // Show suggestions in UI
                         if (suggestions.length > 0) {
+                            logger.info('Showing notification with suggestions');
                             ui.showNotification('Chat suggestions available', {
                                 type: 'info',
                                 action: {
@@ -113,9 +124,12 @@ ${messages.map((m: Message) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m
                                 }
                             });
                         }
+                    } else {
+                        logger.warn('Response content was empty');
                     }
                 } else {
                     logger.warn(`Provider ${provider.id} does not support createChatCompletion`);
+                    ui.showWarning(`Chat Suggestions: Provider ${provider.name} does not support generation.`);
                 }
                 
             } catch (error) {
