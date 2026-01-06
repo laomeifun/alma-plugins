@@ -19,7 +19,7 @@ import { TokenStore } from './lib/token-store';
 import { getAuthorizationUrl, exchangeCodeForTokens } from './lib/auth';
 import { CODEX_MODELS, getBaseModelId, getReasoningEffort } from './lib/models';
 import { getCodexInstructions } from './lib/codex-instructions';
-import { filterAlmaSystemPromptsWithMemory, addAlmaBridgeMessage } from './lib/alma-codex-bridge';
+import { addAlmaBridgeMessage } from './lib/alma-codex-bridge';
 
 // ============================================================================
 // Constants (matching opencode-openai-codex-auth)
@@ -269,9 +269,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     let filteredInput = parsed.input || parsed.messages;
                     const hasTools = !!parsed.tools && parsed.tools.length > 0;
 
-                    // Extract memory context before filtering
-                    let memoryContext: string | null = null;
-
                     if (Array.isArray(filteredInput)) {
                         filteredInput = filteredInput
                             .filter((item: any) => {
@@ -294,30 +291,16 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         // This converts orphaned function_call_output items to messages to preserve context
                         filteredInput = normalizeOrphanedToolOutputs(filteredInput);
 
-                        // Filter Alma system prompts and extract memory context
-                        // Memory context from Alma (retrieved memories) needs to be preserved
-                        // and appended to Codex instructions
-                        const result = filterAlmaSystemPromptsWithMemory(filteredInput);
-                        filteredInput = result.filtered;
-                        memoryContext = result.memoryContext;
-
-                        // Add Alma-Codex bridge message when tools are present (matching opencode's addCodexBridgeMessage)
+                        // Add Alma-Codex bridge message when tools are present
                         // This maps Codex tool names (apply_patch, update_plan) to Alma tool names (Edit, TodoWrite)
+                        // Note: We don't filter Alma system prompts - they coexist with Codex instructions
+                        // This preserves Alma's context (date, platform, memories) while adding Codex behavior
                         filteredInput = addAlmaBridgeMessage(filteredInput, hasTools);
                     }
 
                     // Fetch Codex instructions from GitHub (matching opencode)
                     // These are cached with ETag for 15 minutes
-                    let codexInstructions = await getCodexInstructions(normalizedModel);
-
-                    // Append Alma memory context to Codex instructions if present
-                    // This preserves user-specific memories that were injected by Alma
-                    if (memoryContext) {
-                        codexInstructions = codexInstructions
-                            ? `${codexInstructions}\n\n${memoryContext}`
-                            : memoryContext;
-                        logger.debug(`Appended memory context to Codex instructions (${memoryContext.length} chars)`);
-                    }
+                    const codexInstructions = await getCodexInstructions(normalizedModel);
 
                     // Transform to Codex format (matching opencode's transformRequestBody)
                     const transformedBody: Record<string, any> = {
