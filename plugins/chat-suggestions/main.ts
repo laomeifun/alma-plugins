@@ -84,7 +84,25 @@ ${messages.map((m: Message) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m
                         const suggestions = response.content.split('\n').filter(s => s.trim().length > 0);
                         logger.info('Generated suggestions:', suggestions);
                         
-                        // Show suggestions in UI\n                        if (suggestions.length > 0) {\n                            // We use showQuickPick to display suggestions to the user\n                            // This allows the user to select one to send (conceptually)\n                            // Since we can't automatically populate the input box yet, we'll just show them.\n                            // If the user selects one, we could potentially copy it to clipboard or insert it if API allowed.\n                            // For now, we just show them.\n                            \n                            // Note: showQuickPick is async and might block if we await it, \n                            // but here we just want to show it. However, showing it immediately after a message might be intrusive.\n                            // A better UI would be a non-modal suggestion list, but we are limited to the current UI API.\n                            // Let's use a notification for the first one, or maybe a status bar item?\n                            // Actually, the user asked to "show in UI". \n                            // Let's try to use a status bar item to indicate suggestions are available,\n                            // or just show them in a QuickPick if the user runs a command.\n                            \n                            // But the requirement implies automatic display.\n                            // Let's use showNotification for now as it's the most visible non-blocking UI element we have access to\n                            // that doesn't require user initiation (like a command).\n                            // Alternatively, we can register a command "Show Suggestions" and trigger it, \n                            // but we can't trigger commands programmatically easily without a user action context usually.\n                            \n                            // Let's go with a "Show Suggestions" notification that has an action.\n                            ui.showNotification('Chat suggestions available', {\n                                type: 'info',\n                                action: {\n                                    label: 'View',\n                                    callback: async () => {\n                                        const selected = await ui.showQuickPick(\n                                            suggestions.map(s => ({ label: s, value: s })),\n                                            { title: 'Select a reply to copy to clipboard' }\n                                        );\n                                        \n                                        if (selected) {\n                                            // Ideally we would insert this into the chat input.\n                                            // Since we don't have an API for that, we'll just notify the user.\n                                            ui.showNotification(`Selected: ${selected}`, { type: 'success' });\n                                            // In a real app, we might write to clipboard here if we had access.\n                                        }\n                                    }\n                                }\n                            });\n                        }
+                        // Show suggestions in UI
+                        if (suggestions.length > 0) {
+                            ui.showNotification('Chat suggestions available', {
+                                type: 'info',
+                                action: {
+                                    label: 'View',
+                                    callback: async () => {
+                                        const selected = await ui.showQuickPick(
+                                            suggestions.map(s => ({ label: s, value: s })),
+                                            { title: 'Select a reply to copy to clipboard' }
+                                        );
+                                        
+                                        if (selected) {
+                                            ui.showNotification(`Selected: ${selected}`, { type: 'success' });
+                                        }
+                                    }
+                                }
+                            });
+                        }
                     }
                 } else {
                     logger.warn(`Provider ${provider.id} does not support createChatCompletion`);
