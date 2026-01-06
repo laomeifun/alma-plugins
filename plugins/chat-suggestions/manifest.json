@@ -11,6 +11,7 @@
     "engines": {
         "alma": "^0.1.0"
     },
+    "type": "ui",
     "permissions": ["chat:read", "chat:write", "settings:read"],
     "activationEvents": ["onStartup"],
     "contributes": {
