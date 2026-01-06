@@ -107,6 +107,13 @@ You've hit the ChatGPT usage limits. Wait and try again later.
 
 MIT License
 
-## Credits
+## Acknowledgments
 
-Inspired by [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth)
+This plugin is based on and inspired by [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth) by [@numman-ali](https://github.com/numman-ali).
+
+Special thanks to the original author for:
+- The OAuth authentication flow implementation
+- ChatGPT Codex API reverse engineering
+- The overall architecture and approach
+
+Without their pioneering work, this plugin would not have been possible.
