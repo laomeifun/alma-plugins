@@ -133,8 +133,8 @@ export function transformRequest(
         const generationConfig: GeminiGenerationConfig = geminiRequest.generationConfig || {};
 
         generationConfig.thinkingConfig = {
-            include_thoughts: true,
-            thinking_budget: thinkingBudget,
+            includeThoughts: true,
+            thinkingBudget: thinkingBudget,
         };
 
         // Ensure maxOutputTokens is large enough for thinking
