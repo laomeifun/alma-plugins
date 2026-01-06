@@ -1,14 +1,18 @@
 /**
  * Request/Response Transformation for Antigravity
  *
- * Transforms Google AI SDK requests to Antigravity API format.
- * The AI SDK sends requests in Gemini format (contents/parts), we just need
- * to wrap them in Antigravity's envelope format and add auth headers.
+ * Transforms OpenAI Responses API format requests to Antigravity API format.
+ * Alma uses createOpenAI() for all plugin providers, so requests come in
+ * OpenAI format and need to be converted to Gemini format for Antigravity.
  */
 
 import type {
     AntigravityRequestBody,
     GeminiRequest,
+    GeminiContent,
+    GeminiPart,
+    GeminiTool,
+    GeminiFunctionDeclaration,
     GeminiGenerationConfig,
     HeaderStyle,
     AntigravityHeaders,
@@ -49,10 +53,10 @@ const CLAUDE_THINKING_MAX_OUTPUT_TOKENS = 65536;
 // ============================================================================
 
 /**
- * Check if this is a Generative Language API request
+ * Check if this is a Generative Language API request or OpenAI Responses API request
  */
 export function isGenerativeLanguageRequest(url: string): boolean {
-    return url.includes('generativelanguage.googleapis.com');
+    return url.includes('generativelanguage.googleapis.com') || url.includes('/responses');
 }
 
 /**
@@ -67,7 +71,173 @@ export function extractModelFromUrl(url: string): string | null {
  * Detect if this is a streaming request
  */
 export function isStreamingRequest(url: string): boolean {
-    return url.includes(':streamGenerateContent');
+    return url.includes(':streamGenerateContent') || url.includes('stream=true');
+}
+
+// ============================================================================
+// OpenAI Responses API to Gemini Format Conversion
+// ============================================================================
+
+/**
+ * OpenAI Responses API item types
+ */
+interface ResponsesAPIItem {
+    type: string;
+    id?: string;
+    role?: string;
+    content?: string | Array<{ type: string; text?: string }>;
+    call_id?: string;
+    name?: string;
+    arguments?: string;
+    output?: string;
+    status?: string;
+}
+
+/**
+ * OpenAI Responses API request body
+ */
+interface ResponsesAPIRequestBody {
+    model: string;
+    input?: ResponsesAPIItem[];
+    instructions?: string;
+    tools?: Array<{
+        type: string;
+        name?: string;
+        description?: string;
+        parameters?: Record<string, unknown>;
+    }>;
+    stream?: boolean;
+    max_output_tokens?: number;
+    temperature?: number;
+    top_p?: number;
+}
+
+/**
+ * Convert OpenAI Responses API input to Gemini contents format
+ */
+function convertInputToContents(input: ResponsesAPIItem[]): {
+    contents: GeminiContent[];
+    systemInstruction?: { parts: Array<{ text: string }> };
+} {
+    const contents: GeminiContent[] = [];
+    let systemInstruction: { parts: Array<{ text: string }> } | undefined;
+
+    for (const item of input) {
+        // Handle system messages
+        if (item.type === 'message' && item.role === 'system') {
+            const text = extractTextFromContent(item.content);
+            if (text) {
+                if (systemInstruction) {
+                    systemInstruction.parts.push({ text });
+                } else {
+                    systemInstruction = { parts: [{ text }] };
+                }
+            }
+            continue;
+        }
+
+        // Handle user messages
+        if (item.type === 'message' && item.role === 'user') {
+            const text = extractTextFromContent(item.content);
+            if (text) {
+                contents.push({
+                    role: 'user',
+                    parts: [{ text }],
+                });
+            }
+            continue;
+        }
+
+        // Handle assistant messages
+        if (item.type === 'message' && item.role === 'assistant') {
+            const text = extractTextFromContent(item.content);
+            if (text) {
+                contents.push({
+                    role: 'model',
+                    parts: [{ text }],
+                });
+            }
+            continue;
+        }
+
+        // Handle function calls
+        if (item.type === 'function_call') {
+            let args: Record<string, unknown> = {};
+            if (item.arguments) {
+                try {
+                    args = JSON.parse(item.arguments);
+                } catch {
+                    // Keep empty args
+                }
+            }
+            contents.push({
+                role: 'model',
+                parts: [{
+                    functionCall: {
+                        name: item.name || 'unknown',
+                        args,
+                        id: item.call_id,
+                    },
+                }],
+            });
+            continue;
+        }
+
+        // Handle function call outputs
+        if (item.type === 'function_call_output') {
+            contents.push({
+                role: 'user',
+                parts: [{
+                    functionResponse: {
+                        name: item.name || 'unknown',
+                        response: { result: item.output || '' },
+                        id: item.call_id,
+                    },
+                }],
+            });
+            continue;
+        }
+    }
+
+    return { contents, systemInstruction };
+}
+
+/**
+ * Extract text from content (string or array)
+ */
+function extractTextFromContent(content: string | Array<{ type: string; text?: string }> | undefined): string {
+    if (!content) return '';
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content
+            .filter(c => c.type === 'text' || c.type === 'input_text' || c.type === 'output_text')
+            .map(c => c.text || '')
+            .join('\n');
+    }
+    return '';
+}
+
+/**
+ * Convert OpenAI tools to Gemini function declarations
+ */
+function convertToolsToFunctionDeclarations(tools: ResponsesAPIRequestBody['tools']): GeminiTool[] {
+    if (!tools || tools.length === 0) return [];
+
+    const functionDeclarations: GeminiFunctionDeclaration[] = [];
+
+    for (const tool of tools) {
+        if (tool.type !== 'function') continue;
+
+        functionDeclarations.push({
+            name: tool.name || 'unknown',
+            description: tool.description || '',
+            parameters: tool.parameters,
+        });
+    }
+
+    if (functionDeclarations.length === 0) return [];
+
+    return [{ functionDeclarations }];
 }
 
 // ============================================================================
@@ -84,22 +254,7 @@ export interface TransformResult {
 }
 
 /**
- * Transform Google AI SDK request to Antigravity format.
- *
- * The AI SDK sends requests in Gemini format:
- * {
- *   contents: [...],
- *   systemInstruction: {...},
- *   tools: [...],
- *   generationConfig: {...}
- * }
- *
- * We wrap this in Antigravity's envelope:
- * {
- *   project: "...",
- *   model: "...",
- *   request: { ...geminiRequest }
- * }
+ * Transform OpenAI Responses API request to Antigravity format.
  */
 export function transformRequest(
     originalUrl: string,
@@ -109,45 +264,49 @@ export function transformRequest(
     headerStyle: HeaderStyle = 'antigravity',
     endpoint: string = PRIMARY_ENDPOINT
 ): TransformResult {
-    let parsed: any;
+    let parsed: ResponsesAPIRequestBody;
     try {
         parsed = JSON.parse(body);
     } catch {
         throw new Error('Invalid request body');
     }
 
-    // Extract model from URL (e.g., /models/claude-sonnet-4-5-thinking:streamGenerateContent)
-    const modelFromUrl = extractModelFromUrl(originalUrl);
-    const requestedModel = modelFromUrl || parsed.model || 'unknown';
+    const requestedModel = parsed.model || 'unknown';
     const { baseModel, thinkingLevel, thinkingBudget } = parseModelWithTier(requestedModel);
     const effectiveModel = baseModel;
     const family = getModelFamily(requestedModel);
     const isClaude = family === 'claude';
     const isThinking = isClaudeThinkingModel(requestedModel);
-    const streaming = isStreamingRequest(originalUrl);
+    const streaming = parsed.stream === true;
 
-    // The request body from AI SDK is already in Gemini format
-    // We just need to enhance it and wrap it
+    // Convert OpenAI Responses API input to Gemini format
+    const input = parsed.input || [];
+    const { contents, systemInstruction } = convertInputToContents(input);
+
+    // Build Gemini request
     const geminiRequest: GeminiRequest = {
-        contents: parsed.contents || [],
+        contents,
     };
 
-    // Copy system instruction if present
-    if (parsed.systemInstruction) {
-        geminiRequest.systemInstruction = parsed.systemInstruction;
-
-        // Add thinking hint for Claude thinking models with tools
-        if (isThinking && parsed.tools && parsed.tools.length > 0) {
-            const hint = 'Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer.';
-            if (geminiRequest.systemInstruction.parts) {
-                geminiRequest.systemInstruction.parts.push({ text: hint });
-            }
-        }
+    // Add system instruction
+    if (systemInstruction) {
+        geminiRequest.systemInstruction = systemInstruction;
+    } else if (parsed.instructions) {
+        // Use instructions field as system instruction
+        geminiRequest.systemInstruction = {
+            parts: [{ text: parsed.instructions }],
+        };
     }
 
-    // Copy tools if present
-    if (parsed.tools) {
-        geminiRequest.tools = parsed.tools;
+    // Add thinking hint for Claude thinking models with tools
+    if (isThinking && parsed.tools && parsed.tools.length > 0 && geminiRequest.systemInstruction) {
+        const hint = 'Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer.';
+        geminiRequest.systemInstruction.parts.push({ text: hint });
+    }
+
+    // Convert tools
+    if (parsed.tools && parsed.tools.length > 0) {
+        geminiRequest.tools = convertToolsToFunctionDeclarations(parsed.tools);
 
         // Set tool config for Claude VALIDATED mode
         if (isClaude) {
@@ -160,7 +319,17 @@ export function transformRequest(
     }
 
     // Build generation config
-    const generationConfig: GeminiGenerationConfig = parsed.generationConfig || {};
+    const generationConfig: GeminiGenerationConfig = {};
+
+    if (parsed.max_output_tokens) {
+        generationConfig.maxOutputTokens = parsed.max_output_tokens;
+    }
+    if (parsed.temperature !== undefined) {
+        generationConfig.temperature = parsed.temperature;
+    }
+    if (parsed.top_p !== undefined) {
+        generationConfig.topP = parsed.top_p;
+    }
 
     // Add thinking config for Claude thinking models
     if (isThinking && thinkingBudget) {
@@ -169,8 +338,7 @@ export function transformRequest(
             thinking_budget: thinkingBudget,
         };
         // Ensure maxOutputTokens is large enough
-        const currentMax = generationConfig.maxOutputTokens || generationConfig.max_output_tokens || 0;
-        if (!currentMax || currentMax <= thinkingBudget) {
+        if (!generationConfig.maxOutputTokens || generationConfig.maxOutputTokens <= thinkingBudget) {
             generationConfig.maxOutputTokens = CLAUDE_THINKING_MAX_OUTPUT_TOKENS;
         }
     }
@@ -229,15 +397,13 @@ export function transformRequest(
 // ============================================================================
 
 /**
- * Transform Antigravity SSE response.
- * The response needs to be unwrapped from Antigravity's envelope format.
+ * Transform Antigravity SSE response to OpenAI Responses API format.
  */
 export function transformStreamingResponse(response: Response): Response {
     if (!response.body) {
         return response;
     }
 
-    const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
     let buffer = '';
@@ -267,9 +433,10 @@ export function transformStreamingResponse(response: Response): Response {
 
                 try {
                     const data = JSON.parse(dataStr);
-                    // Unwrap Antigravity envelope - the 'response' field contains the actual Gemini response
+                    // Unwrap Antigravity envelope and transform to OpenAI format
                     const unwrapped = data.response || data;
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(unwrapped)}\n`));
+                    const transformed = transformGeminiToOpenAI(unwrapped);
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n`));
                 } catch {
                     // Pass through as-is if parsing fails
                     controller.enqueue(encoder.encode(line + '\n'));
@@ -291,8 +458,55 @@ export function transformStreamingResponse(response: Response): Response {
 }
 
 /**
- * Transform non-streaming response from Antigravity.
- * Unwrap the Antigravity envelope format.
+ * Transform Gemini response to OpenAI Responses API format
+ */
+function transformGeminiToOpenAI(data: any): any {
+    // Already in OpenAI format
+    if (data.type || data.object) {
+        return data;
+    }
+
+    const candidates = data.candidates || [];
+    if (candidates.length === 0) {
+        return data;
+    }
+
+    const candidate = candidates[0];
+    const content = candidate.content || {};
+    const parts = content.parts || [];
+
+    // Build output items
+    const output: any[] = [];
+
+    for (const part of parts) {
+        if (part.text && !part.thought) {
+            output.push({
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: part.text }],
+            });
+        } else if (part.functionCall) {
+            output.push({
+                type: 'function_call',
+                call_id: part.functionCall.id || `call_${Date.now()}`,
+                name: part.functionCall.name,
+                arguments: JSON.stringify(part.functionCall.args || {}),
+            });
+        }
+    }
+
+    return {
+        type: 'response',
+        output,
+        usage: data.usageMetadata ? {
+            input_tokens: data.usageMetadata.promptTokenCount || 0,
+            output_tokens: data.usageMetadata.candidatesTokenCount || 0,
+        } : undefined,
+    };
+}
+
+/**
+ * Transform non-streaming response from Antigravity to OpenAI format.
  */
 export async function transformNonStreamingResponse(response: Response): Promise<Response> {
     const text = await response.text();
@@ -300,10 +514,11 @@ export async function transformNonStreamingResponse(response: Response): Promise
     try {
         const data = JSON.parse(text);
 
-        // Unwrap Antigravity envelope - the 'response' field contains the actual Gemini response
+        // Unwrap Antigravity envelope and transform
         const unwrapped = data.response || data;
+        const transformed = transformGeminiToOpenAI(unwrapped);
 
-        return new Response(JSON.stringify(unwrapped), {
+        return new Response(JSON.stringify(transformed), {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
