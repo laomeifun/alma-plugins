@@ -96,16 +96,8 @@ export const ANTIGRAVITY_MODELS: AntigravityModelInfo[] = [
         contextWindow: 200000,
         maxOutputTokens: 65536,
     },
-    {
-        id: 'claude-opus-4-5',
-        name: 'Claude Opus 4.5',
-        description: 'Claude Opus 4.5 without thinking',
-        baseModel: 'claude-opus-4-5',
-        family: 'claude',
-        thinking: 'none',
-        contextWindow: 200000,
-        maxOutputTokens: 8192,
-    },
+    // NOTE: claude-opus-4-5 (without thinking) is NOT supported by Antigravity API
+    // Only thinking variants are available for Opus
 
     // -------------------------------------------------------------------------
     // Gemini 2.5 Models
