@@ -24,9 +24,9 @@ import { getModelFamily, isClaudeThinkingModel, parseModelWithTier } from './mod
 // ============================================================================
 
 // Antigravity API endpoints (in fallback order)
+// Note: autopush endpoint is unavailable per API spec
 export const ANTIGRAVITY_ENDPOINTS = [
     'https://daily-cloudcode-pa.sandbox.googleapis.com',
-    'https://autopush-cloudcode-pa.sandbox.googleapis.com',
     'https://cloudcode-pa.googleapis.com',
 ] as const;
 
@@ -262,7 +262,8 @@ export function transformRequest(
     accessToken: string,
     projectId: string,
     headerStyle: HeaderStyle = 'antigravity',
-    endpoint: string = PRIMARY_ENDPOINT
+    endpoint: string = PRIMARY_ENDPOINT,
+    logger?: { debug: (msg: string, ...args: unknown[]) => void }
 ): TransformResult {
     let parsed: ResponsesAPIRequestBody;
     try {
@@ -274,6 +275,8 @@ export function transformRequest(
     const requestedModel = parsed.model || 'unknown';
     const { baseModel, thinkingLevel, thinkingBudget } = parseModelWithTier(requestedModel);
     const effectiveModel = baseModel;
+
+    logger?.debug(`Model resolution: ${requestedModel} -> ${effectiveModel}, thinking=${thinkingLevel}, budget=${thinkingBudget}`);
     const family = getModelFamily(requestedModel);
     const isClaude = family === 'claude';
     const isThinking = isClaudeThinkingModel(requestedModel);
@@ -282,6 +285,13 @@ export function transformRequest(
     // Convert OpenAI Responses API input to Gemini format
     const input = parsed.input || [];
     const { contents, systemInstruction } = convertInputToContents(input);
+
+    logger?.debug(`Converted ${input.length} input items to ${contents.length} contents`);
+
+    // Validate contents - must have at least one message
+    if (contents.length === 0 && !systemInstruction) {
+        throw new Error('No valid messages found in request. Input items may have unexpected format.');
+    }
 
     // Build Gemini request
     const geminiRequest: GeminiRequest = {

@@ -16,14 +16,13 @@ Use your Google Antigravity IDE subscription to access Claude and Gemini models 
 ### Claude Series
 
 - `claude-sonnet-4-5` - Claude Sonnet 4.5 without thinking
-- `claude-sonnet-4-5-thinking` - With medium thinking (default)
-- `claude-sonnet-4-5-thinking-high` - With high thinking budget
-- `claude-sonnet-4-5-thinking-low` - With low thinking budget
-- `claude-sonnet-4-5-thinking-minimal` - With minimal thinking budget
+- `claude-sonnet-4-5-thinking` - With medium thinking (default, 16K tokens)
+- `claude-sonnet-4-5-thinking-high` - With high thinking budget (32K tokens)
+- `claude-sonnet-4-5-thinking-low` - With low thinking budget (8K tokens)
 - `claude-opus-4-5` - Claude Opus 4.5 without thinking
-- `claude-opus-4-5-thinking` - With extended thinking
-- `claude-opus-4-5-thinking-high` - With high thinking budget
-- `claude-opus-4-5-thinking-low` - With low thinking budget
+- `claude-opus-4-5-thinking` - With extended thinking (16K tokens)
+- `claude-opus-4-5-thinking-high` - With high thinking budget (32K tokens)
+- `claude-opus-4-5-thinking-low` - With low thinking budget (8K tokens)
 
 ### Gemini Series
 

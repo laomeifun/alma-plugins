@@ -14,6 +14,7 @@ import type { AntigravityModelInfo, ThinkingLevel } from './types';
 export const ANTIGRAVITY_MODELS: AntigravityModelInfo[] = [
     // -------------------------------------------------------------------------
     // Claude Models (Thinking variants)
+    // Budgets based on opencode-antigravity-auth: { low: 8192, medium: 16384, high: 32768 }
     // -------------------------------------------------------------------------
     {
         id: 'claude-sonnet-4-5-thinking',
@@ -22,7 +23,7 @@ export const ANTIGRAVITY_MODELS: AntigravityModelInfo[] = [
         baseModel: 'claude-sonnet-4-5-thinking',
         family: 'claude',
         thinking: 'medium',
-        thinkingBudget: 10240,
+        thinkingBudget: 16384,
         contextWindow: 200000,
         maxOutputTokens: 65536,
     },
@@ -44,18 +45,7 @@ export const ANTIGRAVITY_MODELS: AntigravityModelInfo[] = [
         baseModel: 'claude-sonnet-4-5-thinking',
         family: 'claude',
         thinking: 'low',
-        thinkingBudget: 5120,
-        contextWindow: 200000,
-        maxOutputTokens: 65536,
-    },
-    {
-        id: 'claude-sonnet-4-5-thinking-minimal',
-        name: 'Claude Sonnet 4.5 (Minimal Thinking)',
-        description: 'Claude Sonnet 4.5 with minimal thinking budget',
-        baseModel: 'claude-sonnet-4-5-thinking',
-        family: 'claude',
-        thinking: 'minimal',
-        thinkingBudget: 2048,
+        thinkingBudget: 8192,
         contextWindow: 200000,
         maxOutputTokens: 65536,
     },
@@ -80,7 +70,7 @@ export const ANTIGRAVITY_MODELS: AntigravityModelInfo[] = [
         baseModel: 'claude-opus-4-5-thinking',
         family: 'claude',
         thinking: 'medium',
-        thinkingBudget: 10240,
+        thinkingBudget: 16384,
         contextWindow: 200000,
         maxOutputTokens: 65536,
     },
@@ -102,7 +92,7 @@ export const ANTIGRAVITY_MODELS: AntigravityModelInfo[] = [
         baseModel: 'claude-opus-4-5-thinking',
         family: 'claude',
         thinking: 'low',
-        thinkingBudget: 5120,
+        thinkingBudget: 8192,
         contextWindow: 200000,
         maxOutputTokens: 65536,
     },
@@ -180,30 +170,44 @@ export const ANTIGRAVITY_MODELS: AntigravityModelInfo[] = [
 // ============================================================================
 
 /**
+ * Strip provider prefix from model ID (e.g., "antigravity:claude-sonnet-4-5" -> "claude-sonnet-4-5")
+ */
+export function stripProviderPrefix(modelId: string): string {
+    const colonIndex = modelId.indexOf(':');
+    if (colonIndex !== -1) {
+        return modelId.slice(colonIndex + 1);
+    }
+    return modelId;
+}
+
+/**
  * Get model info by ID
  */
 export function getModelInfo(modelId: string): AntigravityModelInfo | undefined {
-    return ANTIGRAVITY_MODELS.find((m) => m.id === modelId);
+    const cleanId = stripProviderPrefix(modelId);
+    return ANTIGRAVITY_MODELS.find((m) => m.id === cleanId);
 }
 
 /**
  * Get the base model ID for API calls
  */
 export function getBaseModelId(modelId: string): string {
-    const model = getModelInfo(modelId);
-    return model?.baseModel ?? modelId;
+    const cleanId = stripProviderPrefix(modelId);
+    const model = getModelInfo(cleanId);
+    return model?.baseModel ?? cleanId;
 }
 
 /**
  * Get model family (claude or gemini)
  */
 export function getModelFamily(modelId: string): 'claude' | 'gemini' {
-    const model = getModelInfo(modelId);
+    const cleanId = stripProviderPrefix(modelId);
+    const model = getModelInfo(cleanId);
     if (model) {
         return model.family;
     }
     // Detect from model ID
-    if (modelId.toLowerCase().includes('claude')) {
+    if (cleanId.toLowerCase().includes('claude')) {
         return 'claude';
     }
     return 'gemini';
@@ -213,12 +217,13 @@ export function getModelFamily(modelId: string): 'claude' | 'gemini' {
  * Check if model is a Claude thinking model
  */
 export function isClaudeThinkingModel(modelId: string): boolean {
-    const model = getModelInfo(modelId);
+    const cleanId = stripProviderPrefix(modelId);
+    const model = getModelInfo(cleanId);
     if (model) {
         return model.family === 'claude' && model.thinking !== 'none' && model.thinking !== undefined;
     }
     // Fallback detection from model ID
-    const lower = modelId.toLowerCase();
+    const lower = cleanId.toLowerCase();
     return lower.includes('claude') && lower.includes('thinking');
 }
 
@@ -226,7 +231,8 @@ export function isClaudeThinkingModel(modelId: string): boolean {
  * Get thinking budget for a model
  */
 export function getThinkingBudget(modelId: string): number | undefined {
-    const model = getModelInfo(modelId);
+    const cleanId = stripProviderPrefix(modelId);
+    const model = getModelInfo(cleanId);
     return model?.thinkingBudget;
 }
 
@@ -234,7 +240,8 @@ export function getThinkingBudget(modelId: string): number | undefined {
  * Get thinking level for a model
  */
 export function getThinkingLevel(modelId: string): ThinkingLevel {
-    const model = getModelInfo(modelId);
+    const cleanId = stripProviderPrefix(modelId);
+    const model = getModelInfo(cleanId);
     return model?.thinking ?? 'none';
 }
 
@@ -247,7 +254,8 @@ export function parseModelWithTier(modelId: string): {
     thinkingLevel: ThinkingLevel;
     thinkingBudget?: number;
 } {
-    const model = getModelInfo(modelId);
+    const cleanId = stripProviderPrefix(modelId);
+    const model = getModelInfo(cleanId);
     if (model) {
         return {
             baseModel: model.baseModel,
@@ -256,18 +264,17 @@ export function parseModelWithTier(modelId: string): {
         };
     }
 
-    // Fallback: try to parse tier suffix
+    // Fallback: try to parse tier suffix (budgets match opencode-antigravity-auth)
     const tierMap: Record<string, { level: ThinkingLevel; budget: number }> = {
         '-high': { level: 'high', budget: 32768 },
-        '-medium': { level: 'medium', budget: 10240 },
-        '-low': { level: 'low', budget: 5120 },
-        '-minimal': { level: 'minimal', budget: 2048 },
+        '-medium': { level: 'medium', budget: 16384 },
+        '-low': { level: 'low', budget: 8192 },
     };
 
     for (const [suffix, config] of Object.entries(tierMap)) {
-        if (modelId.endsWith(suffix)) {
+        if (cleanId.endsWith(suffix)) {
             return {
-                baseModel: modelId.slice(0, -suffix.length),
+                baseModel: cleanId.slice(0, -suffix.length),
                 thinkingLevel: config.level,
                 thinkingBudget: config.budget,
             };
@@ -275,7 +282,7 @@ export function parseModelWithTier(modelId: string): {
     }
 
     return {
-        baseModel: modelId,
+        baseModel: cleanId,
         thinkingLevel: 'none',
     };
 }

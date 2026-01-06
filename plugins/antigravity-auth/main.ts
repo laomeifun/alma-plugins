@@ -138,7 +138,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         accessToken,
                         projectId,
                         headerStyle,
-                        endpoint
+                        endpoint,
+                        logger
                     );
 
                     logger.debug(`Sending request to ${endpoint}, model=${transformed.effectiveModel}, streaming=${transformed.streaming}`);

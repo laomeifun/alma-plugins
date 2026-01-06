@@ -32,7 +32,7 @@ export interface OAuthConfig {
 // Model Types
 // ============================================================================
 
-export type ThinkingLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high';
+export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 
 export interface AntigravityModelInfo {
     id: string;
