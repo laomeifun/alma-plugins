@@ -39,6 +39,12 @@ const URL_PATHS = {
     CODEX_RESPONSES: '/codex/responses',
 } as const;
 
+// HTTP status codes (matching opencode)
+const HTTP_STATUS = {
+    NOT_FOUND: 404,
+    TOO_MANY_REQUESTS: 429,
+} as const;
+
 // ============================================================================
 // Plugin Activation
 // ============================================================================
@@ -115,6 +121,86 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     };
 
     /**
+     * Map 404 usage limit errors to 429 status (matching opencode)
+     * This allows the caller to properly handle rate limiting
+     */
+    const mapUsageLimit404 = async (response: Response): Promise<Response | null> => {
+        if (response.status !== HTTP_STATUS.NOT_FOUND) return null;
+
+        const clone = response.clone();
+        let text = '';
+        try {
+            text = await clone.text();
+        } catch {
+            text = '';
+        }
+        if (!text) return null;
+
+        let code = '';
+        try {
+            const parsed = JSON.parse(text) as any;
+            code = (parsed?.error?.code ?? parsed?.error?.type ?? '').toString();
+        } catch {
+            code = '';
+        }
+
+        const haystack = `${code} ${text}`.toLowerCase();
+        if (!/usage_limit_reached|usage_not_included|rate_limit_exceeded|usage limit/i.test(haystack)) {
+            return null;
+        }
+
+        // Return 429 instead of 404 for usage limit errors
+        const headers = new Headers(response.headers);
+        return new Response(response.body, {
+            status: HTTP_STATUS.TOO_MANY_REQUESTS,
+            statusText: 'Too Many Requests',
+            headers,
+        });
+    };
+
+    /**
+     * Handle orphaned tool outputs by converting them to messages (matching opencode)
+     * This prevents infinite loops when function_call was an item_reference that got filtered
+     */
+    const normalizeOrphanedToolOutputs = (input: any[]): any[] => {
+        // Collect all function call IDs
+        const functionCallIds = new Set<string>();
+        for (const item of input) {
+            if (item.type === 'function_call' && item.call_id) {
+                functionCallIds.add(item.call_id);
+            }
+        }
+
+        // Convert orphaned function_call_output items to messages
+        return input.map((item) => {
+            if (item.type === 'function_call_output') {
+                const callId = item.call_id;
+                const hasMatch = callId && functionCallIds.has(callId);
+                if (!hasMatch) {
+                    // Convert to message to preserve context
+                    const toolName = item.name || 'tool';
+                    const labelCallId = callId || 'unknown';
+                    let text: string;
+                    try {
+                        text = typeof item.output === 'string' ? item.output : JSON.stringify(item.output);
+                    } catch {
+                        text = String(item.output ?? '');
+                    }
+                    if (text.length > 16000) {
+                        text = text.slice(0, 16000) + '\n...[truncated]';
+                    }
+                    return {
+                        type: 'message',
+                        role: 'assistant',
+                        content: `[Previous ${toolName} result; call_id=${labelCallId}]: ${text}`,
+                    };
+                }
+            }
+            return item;
+        });
+    };
+
+    /**
      * Creates a custom fetch function that:
      * 1. Refreshes OAuth token if needed
      * 2. Rewrites URLs for Codex backend
@@ -169,6 +255,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     // This is CRITICAL for Codex API compatibility:
                     // 1. Remove item_reference types (AI SDK construct not supported by Codex)
                     // 2. Strip IDs from all items (required for stateless mode with store=false)
+                    // 3. Normalize orphaned tool outputs to messages (prevent infinite loops)
                     let filteredInput = parsed.input || parsed.messages;
                     if (Array.isArray(filteredInput)) {
                         filteredInput = filteredInput
@@ -187,6 +274,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 }
                                 return item;
                             });
+
+                        // Handle orphaned tool outputs (matching opencode's normalizeOrphanedToolOutputs)
+                        // This converts orphaned function_call_output items to messages to preserve context
+                        filteredInput = normalizeOrphanedToolOutputs(filteredInput);
                     }
 
                     // Transform to Codex format (matching opencode's transformRequestBody)
@@ -200,6 +291,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             verbosity: 'medium', // Matches Codex CLI default
                         },
                     };
+
+                    // Preserve instructions field if present (matching opencode)
+                    // opencode sets body.instructions = codexInstructions from GitHub
+                    // For Alma, we preserve any instructions passed through the request
+                    if (parsed.instructions) {
+                        transformedBody.instructions = parsed.instructions;
+                    }
 
                     // Add reasoning config if not 'none'
                     if (reasoningEffort !== 'none') {
@@ -242,11 +340,22 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 headers,
             });
 
-            // Step 7: Handle error response
+            // Step 7: Handle error response (matching opencode's handleErrorResponse)
             if (!response.ok) {
-                const errorText = await response.text();
+                // Map 404 usage limit errors to 429 for proper rate limit handling
+                const mappedResponse = await mapUsageLimit404(response);
+                if (mappedResponse) {
+                    logger.warn('Usage limit reached, returning 429 status');
+                    return mappedResponse;
+                }
+
+                // For other errors, log and return the error response
+                const errorText = await response.clone().text();
                 logger.error(`Codex API error: ${response.status} ${response.statusText}`, errorText);
-                throw new Error(`Codex API error: ${response.status} ${response.statusText}`);
+
+                // Return the error response instead of throwing
+                // This allows the caller to handle errors properly
+                return response;
             }
 
             // Step 8: Handle success response
