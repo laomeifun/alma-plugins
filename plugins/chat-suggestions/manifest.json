@@ -1,0 +1,28 @@
+{
+    "id": "chat-suggestions",
+    "name": "Chat Suggestions",
+    "version": "1.0.0",
+    "description": "Generates chat suggestions based on conversation context",
+    "author": {
+        "name": "Alma Team",
+        "email": "hello@alma.now"
+    },
+    "main": "main.js",
+    "engines": {
+        "alma": "^0.1.0"
+    },
+    "permissions": ["chat:read", "chat:write", "settings:read"],
+    "activationEvents": ["onStartup"],
+    "contributes": {
+        "configuration": {
+            "title": "Chat Suggestions",
+            "properties": {
+                "chatSuggestions.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable automatic chat suggestions"
+                }
+            }
+        }
+    }
+}
