@@ -215,7 +215,7 @@ function generateImageModels(): AntigravityModelInfo[] {
     };
 
     const ratioLabels: Record<string, string> = {
-        '': '1:1',
+        '': '', // Empty = default (no explicit ratio), different from '-1x1' which is explicit 1:1
         '-1x1': '1:1',
         '-4x3': '4:3',
         '-3x4': '3:4',
@@ -231,8 +231,10 @@ function generateImageModels(): AntigravityModelInfo[] {
             const id = `${base}${res}${ratio}`;
             const resLabel = resolutionLabels[res];
             const ratioLabel = ratioLabels[ratio];
-            // e.g., "Gemini 3 Pro (Image 4K 16:9)" or "Gemini 3 Pro (Image 1:1)"
-            const name = `Gemini 3 Pro (Image ${resLabel}${ratioLabel})`;
+            // Build name parts, filtering out empty strings
+            // e.g., "Gemini 3 Pro (Image 4K 16:9)" or "Gemini 3 Pro (Image)" for default
+            const nameParts = ['Image', resLabel.trim(), ratioLabel].filter(Boolean);
+            const name = `Gemini 3 Pro (${nameParts.join(' ')})`;
 
             models.push({
                 id,
