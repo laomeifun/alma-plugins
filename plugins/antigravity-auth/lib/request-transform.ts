@@ -141,6 +141,42 @@ function restoreThinkingSignatures(contents: GeminiContent[], sessionId: string)
     });
 }
 
+/**
+ * Generate a unique tool call ID
+ */
+function generateToolCallId(): string {
+    return `toolu_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+}
+
+/**
+ * Ensure all functionCall parts have an id field.
+ * Claude requires tool_use.id to match with tool_result.tool_use_id.
+ */
+function ensureFunctionCallIds(contents: GeminiContent[]): GeminiContent[] {
+    return contents.map(content => {
+        if (!content.parts) return content;
+
+        const processedParts = content.parts.map(part => {
+            // Add id to functionCall if missing
+            if (part.functionCall && !part.functionCall.id) {
+                return {
+                    ...part,
+                    functionCall: {
+                        ...part.functionCall,
+                        id: generateToolCallId(),
+                    },
+                };
+            }
+            return part;
+        });
+
+        return {
+            ...content,
+            parts: processedParts,
+        };
+    });
+}
+
 // ============================================================================
 // Request Transformation
 // ============================================================================
@@ -202,6 +238,8 @@ export function transformRequest(
     const sessionId = geminiRequest.sessionId || `alma-${Date.now()}`;
     if (isClaude && geminiRequest.contents) {
         geminiRequest.contents = restoreThinkingSignatures(geminiRequest.contents, sessionId);
+        // Ensure all functionCall parts have IDs (required by Claude)
+        geminiRequest.contents = ensureFunctionCallIds(geminiRequest.contents);
     }
 
     // Sanitize tool schemas for Claude (remove unsupported JSON Schema features)
