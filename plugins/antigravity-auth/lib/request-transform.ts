@@ -19,7 +19,7 @@ import type {
     HeaderStyle,
     AntigravityHeaders,
 } from './types';
-import { getModelFamily, isClaudeThinkingModel, parseModelWithTier, isImageModel, parseImageAspectRatio } from './models';
+import { getModelFamily, isClaudeThinkingModel, parseModelWithTier, isImageModel, parseImageAspectRatio, parseImageSize } from './models';
 import { cacheSignature, getCachedSignature } from './signature-cache';
 import { sanitizeToolsForAntigravity } from './schema-sanitizer';
 import { analyzeConversationState, closeToolLoopForThinking, needsThinkingRecovery } from './thinking-recovery';
@@ -335,16 +335,18 @@ export function transformRequest(
     const isImage = isImageModel(requestedModel);
     if (isImage) {
         const aspectRatio = parseImageAspectRatio(requestedModel);
+        const imageSize = parseImageSize(requestedModel);
         const generationConfig: GeminiGenerationConfig = geminiRequest.generationConfig || {};
 
-        // Add imageConfig for aspect ratio
+        // Add imageConfig for aspect ratio and size
         generationConfig.imageConfig = {
             aspectRatio,
+            ...(imageSize && { imageSize }),
         };
 
         geminiRequest.generationConfig = generationConfig;
 
-        logger?.debug(`Image generation config: model=${requestedModel}, aspectRatio=${aspectRatio}`);
+        logger?.debug(`Image generation config: model=${requestedModel}, aspectRatio=${aspectRatio}, imageSize=${imageSize ?? 'default'}`);
     }
 
     // Add session ID for multi-turn conversations

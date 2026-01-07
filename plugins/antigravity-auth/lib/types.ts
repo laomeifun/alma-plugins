@@ -111,6 +111,8 @@ export interface GeminiToolConfig {
     };
 }
 
+export type ImageSize = '4K' | '2K';
+
 export interface GeminiGenerationConfig {
     thinkingConfig?: {
         include_thoughts?: boolean;
@@ -121,6 +123,7 @@ export interface GeminiGenerationConfig {
     };
     imageConfig?: {
         aspectRatio?: string; // e.g., '1:1', '16:9', '9:16', '4:3', '3:4', '21:9'
+        imageSize?: ImageSize; // e.g., '4K', '2K'
     };
     maxOutputTokens?: number;
     max_output_tokens?: number;
