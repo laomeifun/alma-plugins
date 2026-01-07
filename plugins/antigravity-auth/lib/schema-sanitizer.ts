@@ -130,8 +130,19 @@ export function cleanJSONSchemaForAntigravity(schema: unknown): unknown {
 }
 
 /**
+ * Default empty parameters schema for tools without parameters.
+ * Claude requires all tools to have input_schema.
+ */
+const EMPTY_PARAMETERS_SCHEMA: Record<string, unknown> = {
+    type: 'object',
+    properties: {},
+    required: [],
+};
+
+/**
  * Sanitize tools array for Antigravity API.
  * Cleans function declaration parameters schemas.
+ * Ensures all tools have parameters (Claude requires input_schema).
  */
 export function sanitizeToolsForAntigravity(tools: GeminiTool[] | undefined): GeminiTool[] | undefined {
     if (!tools || tools.length === 0) {
@@ -144,13 +155,12 @@ export function sanitizeToolsForAntigravity(tools: GeminiTool[] | undefined): Ge
         }
 
         const sanitizedDeclarations: GeminiFunctionDeclaration[] = tool.functionDeclarations.map(func => {
-            if (!func.parameters) {
-                return func;
-            }
+            // Ensure parameters exist (Claude requires input_schema for all tools)
+            const parameters = func.parameters || EMPTY_PARAMETERS_SCHEMA;
 
             return {
                 ...func,
-                parameters: cleanJSONSchemaForAntigravity(func.parameters) as Record<string, unknown>,
+                parameters: cleanJSONSchemaForAntigravity(parameters) as Record<string, unknown>,
             };
         });
 
