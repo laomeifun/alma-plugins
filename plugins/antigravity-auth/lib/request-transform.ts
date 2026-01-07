@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { getModelFamily, isClaudeThinkingModel, parseModelWithTier } from './models';
 import { cacheSignature, getCachedSignature } from './signature-cache';
+import { sanitizeToolsForAntigravity } from './schema-sanitizer';
 
 // ============================================================================
 // Constants
@@ -201,6 +202,11 @@ export function transformRequest(
     const sessionId = geminiRequest.sessionId || `alma-${Date.now()}`;
     if (isClaude && geminiRequest.contents) {
         geminiRequest.contents = restoreThinkingSignatures(geminiRequest.contents, sessionId);
+    }
+
+    // Sanitize tool schemas for Claude (remove unsupported JSON Schema features)
+    if (isClaude && geminiRequest.tools) {
+        geminiRequest.tools = sanitizeToolsForAntigravity(geminiRequest.tools);
     }
 
     // Configure Claude tool calling to use VALIDATED mode (only when tools are present)
