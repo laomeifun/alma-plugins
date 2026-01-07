@@ -257,12 +257,28 @@ export class TokenStore {
     /**
      * Get all accounts info for display
      */
-    getAccountsInfo(): Array<{ index: number; email?: string; projectId: string }> {
-        return this.accountManager.getAccounts().map(a => ({
-            index: a.index,
-            email: a.email,
-            projectId: a.projectId,
-        }));
+    getAccountsInfo(): Array<{
+        index: number;
+        email?: string;
+        projectId: string;
+        isRateLimited?: boolean;
+        rateLimitResetAt?: number;
+    }> {
+        return this.accountManager.getAccounts().map(a => {
+            // Check if rate limited for any family
+            const now = Date.now();
+            const resetTimes = Object.values(a.rateLimitResetTimes).filter((t): t is number => t !== undefined && t > now);
+            const isRateLimited = resetTimes.length > 0;
+            const rateLimitResetAt = isRateLimited ? Math.min(...resetTimes) : undefined;
+
+            return {
+                index: a.index,
+                email: a.email,
+                projectId: a.projectId,
+                isRateLimited,
+                rateLimitResetAt,
+            };
+        });
     }
 
     // =========================================================================

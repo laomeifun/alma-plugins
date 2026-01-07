@@ -341,6 +341,42 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 fetch: createAntigravityFetch(),
             };
         },
+
+        // =====================================================================
+        // Multi-Account Support
+        // =====================================================================
+
+        /** This provider supports multiple accounts */
+        supportsMultiAccount: true,
+
+        /**
+         * Get list of connected accounts for UI display
+         */
+        async getAccounts() {
+            const accounts = tokenStore.getAccountsInfo();
+            return accounts.map(a => ({
+                id: String(a.index),
+                email: a.email,
+                label: a.email || `Account ${a.index + 1}`,
+                isRateLimited: a.isRateLimited,
+                rateLimitResetAt: a.rateLimitResetAt,
+            }));
+        },
+
+        /**
+         * Remove a specific account by ID (index)
+         */
+        async removeAccount(accountId: string) {
+            const index = parseInt(accountId, 10);
+            if (isNaN(index)) {
+                throw new Error(`Invalid account ID: ${accountId}`);
+            }
+            const removed = await tokenStore.removeAccount(index);
+            if (!removed) {
+                throw new Error(`Failed to remove account ${accountId}`);
+            }
+            logger.info(`Removed account ${accountId}`);
+        },
     });
 
     // =========================================================================
