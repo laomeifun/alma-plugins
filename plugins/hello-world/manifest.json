@@ -12,7 +12,7 @@
         "alma": "^0.1.0"
     },
     "type": "tool",
-    "permissions": ["notifications"],
+    "permissions": ["notifications", "tools:register"],
     "activationEvents": ["onStartup"],
     "contributes": {
         "tools": [
