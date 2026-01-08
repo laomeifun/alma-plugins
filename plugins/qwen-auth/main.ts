@@ -442,7 +442,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         let buffer = ''; // Buffer for incomplete SSE lines
 
         // Track tool calls so we can emit proper Responses-API function_call output items
-        const toolCallItems = new Map<string, { itemId: string; name?: string; arguments: string }>();
+        const toolCallItems = new Map<string, { itemId: string; name?: string; arguments: string; outputIndex: number }>();
+        const toolCallIndices = new Map<number, string>();
 
         const stream = new ReadableStream({
             async pull(controller) {
@@ -579,25 +580,42 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(deltaEvent)}\n\n`));
                 }
                 
-                // Handle tool calls (emit function_call output items + argument deltas)
+                        // Handle tool calls (emit function_call output items + argument deltas)
                 if (delta?.tool_calls) {
                     for (const toolCall of delta.tool_calls) {
-                        const callId = toolCall.id;
+                        // Qwen sometimes sends tool_calls with index but no id in subsequent chunks
+                        // We need to track the mapping between index and callId
+                        
+                        let callId = toolCall.id;
+                        const index = toolCall.index;
+                        
+                        // If we have an index but no ID, try to look it up
+                        if (!callId && index !== undefined) {
+                            callId = toolCallIndices.get(index);
+                        }
+                        
+                        // If we have both index and ID, save the mapping
+                        if (callId && index !== undefined) {
+                            toolCallIndices.set(index, callId);
+                        }
+                        
                         if (!callId) continue;
 
                         let tracked = toolCallItems.get(callId);
                         if (!tracked) {
+                            const outputIndex = 1 + toolCallItems.size; // after message
                             tracked = {
                                 itemId: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
                                 name: toolCall.function?.name,
                                 arguments: '',
+                                outputIndex,
                             };
                             toolCallItems.set(callId, tracked);
 
                             // Announce a function_call output item
                             const addedCall = {
                                 type: 'response.output_item.added',
-                                output_index: 1 + toolCallItems.size, // after message
+                                output_index: outputIndex,
                                 item: {
                                     type: 'function_call',
                                     id: tracked.itemId,
@@ -618,7 +636,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             const funcDelta = {
                                 type: 'response.function_call_arguments.delta',
                                 item_id: tracked.itemId,
-                                output_index: 1 + toolCallItems.size,
+                                output_index: tracked.outputIndex,
                                 call_id: callId,
                                 delta: toolCall.function.arguments,
                             };
