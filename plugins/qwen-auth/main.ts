@@ -760,6 +760,36 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         // Helper function to emit message done events
         function emitMessageDone(controller: ReadableStreamDefaultController) {
             if (sentMessageDone) return;
+
+            // Ensure the assistant message item exists even if Qwen started with tool_calls
+            // (some Qwen streams begin with {content:"", role:null, tool_calls:[...]}).
+            if (!sentOutputItemAdded) {
+                const added = {
+                    type: 'response.output_item.added',
+                    output_index: 0,
+                    item: { type: 'message', id: outputItemId, status: 'in_progress', role: 'assistant', content: [] },
+                };
+                const addedJson = JSON.stringify(added);
+                logDebug(`Emitting response.output_item.added (late): ${addedJson}`);
+                controller.enqueue(encoder.encode(`data: ${addedJson}\n\n`));
+                sentOutputItemAdded = true;
+            }
+
+            // If we never emitted a content_part.added (e.g., tool_calls came before any text),
+            // synthesize it so that content_part.done/output_text.done are well-formed.
+            if (!sentContentPartAdded) {
+                const partAdded = {
+                    type: 'response.content_part.added',
+                    item_id: outputItemId,
+                    output_index: 0,
+                    content_index: 0,
+                    part: { type: 'output_text', text: '' },
+                };
+                const partAddedJson = JSON.stringify(partAdded);
+                logDebug(`Emitting response.content_part.added (late): ${partAddedJson}`);
+                controller.enqueue(encoder.encode(`data: ${partAddedJson}\n\n`));
+                sentContentPartAdded = true;
+            }
             
             const doneEvent = {
                 type: 'response.output_text.done',
@@ -833,7 +863,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     sentCreated = true;
                 }
 
-                if (!sentOutputItemAdded && delta && (delta.content || delta.role)) {
+                // Always announce the assistant message output item as early as possible.
+                // Do NOT gate on delta.content/delta.role: Qwen can start tool_calls with
+                // empty content and role=null, which would otherwise skip this event.
+                if (!sentOutputItemAdded) {
                     const added = {
                         type: 'response.output_item.added',
                         output_index: 0,
@@ -881,7 +914,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         emitMessageDone(controller);
                     }
                     
-                    logger.debug(`[qwen-auth] Received tool_calls in delta: ${JSON.stringify(delta.tool_calls)}`);
+                    logDebug(`Received tool_calls in delta: ${JSON.stringify(delta.tool_calls).slice(0, 500)}`);
                     for (const toolCall of delta.tool_calls) {
                         // Qwen sometimes sends tool_calls with index but no id in subsequent chunks
                         // We need to track the mapping between index and callId
@@ -897,7 +930,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             // We have a real id now, but we already generated one
                             // This shouldn't happen often, but if it does, use the existing one
                             // to maintain consistency with already-emitted events
-                            logger.debug(`[qwen-auth] Ignoring new callId ${callId} for index ${index}, using existing ${existingCallId}`);
+                            logDebug(`Ignoring new callId ${callId} for index ${index}, using existing ${existingCallId}`);
                             callId = existingCallId;
                         } else if (!callId && existingCallId) {
                             // No id in this chunk, use the existing mapping
@@ -905,7 +938,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         } else if (!callId && !existingCallId) {
                             // No id and no existing mapping - generate one
                             callId = `call_${Date.now()}_${index}`;
-                            logger.debug(`[qwen-auth] Generated callId for tool_call index ${index}: ${callId}`);
+                            logDebug(`Generated callId for tool_call index ${index}: ${callId}`);
                         }
                         
                         // Save/update the mapping between index and callId
@@ -937,6 +970,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                     arguments: '',
                                 },
                             };
+                            logDebug(`Emitting response.output_item.added (function_call): ${JSON.stringify(addedCall).slice(0, 500)}`);
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(addedCall)}\n\n`));
                         }
 
@@ -953,6 +987,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 call_id: callId,
                                 delta: toolCall.function.arguments,
                             };
+                            logDebug(`Emitting response.function_call_arguments.delta: ${JSON.stringify(funcDelta).slice(0, 500)}`);
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(funcDelta)}\n\n`));
                         }
                     }
