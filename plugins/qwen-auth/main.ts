@@ -94,6 +94,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
      * 2. Adds Qwen-specific headers
      * 3. Handles rate limiting and errors
      * 4. Retries on 401 with token refresh
+     * 5. Rewrites URLs for Qwen API compatibility
      */
     const createQwenFetch = (): typeof globalThis.fetch => {
         return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -111,6 +112,17 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             if (!url.includes('qwen.ai') && !url.includes('portal.qwen')) {
                 // Not a Qwen request, pass through
                 return globalThis.fetch(input, init);
+            }
+
+            // Rewrite URL for Qwen API compatibility
+            // OpenAI SDK may use /responses, but Qwen uses /chat/completions
+            let rewrittenUrl = url;
+            if (url.includes('/responses')) {
+                rewrittenUrl = url.replace('/responses', '/chat/completions');
+            }
+            // Also handle /completions -> /chat/completions if needed
+            if (url.endsWith('/completions') && !url.includes('/chat/completions')) {
+                rewrittenUrl = url.replace('/completions', '/chat/completions');
             }
 
             // Determine if streaming based on request body
@@ -139,7 +151,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     headers.set('Accept', 'application/json');
                 }
 
-                return globalThis.fetch(url, {
+                return globalThis.fetch(rewrittenUrl, {
                     ...init,
                     headers,
                 });
@@ -152,9 +164,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             } catch (error) {
                 throw new Error(`Authentication required: ${error instanceof Error ? error.message : 'Unknown error'}`);
             }
-
-            logger.info(`Making Qwen request to: ${url}`);
-            logger.debug(`Streaming: ${isStreaming}, Token length: ${accessToken.length}`);
 
             // Make the request
             let response = await makeRequest(accessToken);
