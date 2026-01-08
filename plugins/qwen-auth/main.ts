@@ -481,6 +481,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         };
                         controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
 
+                        // Push message to output array first
                         output.push({
                             type: 'message',
                             id: outputItemId,
@@ -499,7 +500,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             };
                             const callDone = {
                                 type: 'response.output_item.done',
-                                output_index: output.length,
+                                output_index: item.outputIndex,
                                 item: callItem,
                             };
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(callDone)}\n\n`));
@@ -643,6 +644,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(funcDelta)}\n\n`));
                         }
                     }
+                }
+                
+                // Handle finish_reason
+                if (finishReason) {
+                    // If finish_reason is 'tool_calls' or 'function_call', we might need to ensure
+                    // all tool calls are properly closed/finalized if we were tracking state,
+                    // but in this stateless stream transform, we just rely on the final 'done' event.
+                    // However, some clients might expect a specific event or just the stream end.
+                    // For now, we do nothing special as the stream end (done: true) handles completion.
                 }
             } catch {
                 // Skip malformed JSON
