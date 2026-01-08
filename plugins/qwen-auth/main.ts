@@ -441,6 +441,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         let fullContent = '';
         let buffer = ''; // Buffer for incomplete SSE lines
 
+        // Track tool calls so we can emit proper Responses-API function_call output items
+        const toolCallItems = new Map<string, { itemId: string; name?: string; arguments: string }>();
+
         const stream = new ReadableStream({
             async pull(controller) {
                 try {
@@ -451,8 +454,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         if (buffer.trim()) {
                             processLine(buffer, controller);
                         }
-                        
-                        // Send completion events
+
+                        // Build output array (message + any function_call items)
+                        const output: any[] = [];
+
+                        // Always emit message item (even if empty) to keep Alma happy
                         const doneEvent = {
                             type: 'response.output_text.done',
                             item_id: outputItemId,
@@ -474,17 +480,37 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         };
                         controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
 
+                        output.push({
+                            type: 'message',
+                            id: outputItemId,
+                            role: 'assistant',
+                            content: [{ type: 'output_text', text: fullContent }],
+                        });
+
+                        // Finalize any function_call items
+                        for (const [callId, item] of toolCallItems.entries()) {
+                            const callItem = {
+                                type: 'function_call',
+                                id: item.itemId,
+                                call_id: callId,
+                                name: item.name || 'tool',
+                                arguments: item.arguments || '',
+                            };
+                            const callDone = {
+                                type: 'response.output_item.done',
+                                output_index: output.length,
+                                item: callItem,
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(callDone)}\n\n`));
+                            output.push(callItem);
+                        }
+
                         const completed = {
                             type: 'response.completed',
                             response: {
                                 id: responseId,
                                 status: 'completed',
-                                output: [{
-                                    type: 'message',
-                                    id: outputItemId,
-                                    role: 'assistant',
-                                    content: [{ type: 'output_text', text: fullContent }],
-                                }],
+                                output,
                             },
                         };
                         controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
@@ -553,15 +579,47 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(deltaEvent)}\n\n`));
                 }
                 
-                // Handle tool calls
+                // Handle tool calls (emit function_call output items + argument deltas)
                 if (delta?.tool_calls) {
                     for (const toolCall of delta.tool_calls) {
+                        const callId = toolCall.id;
+                        if (!callId) continue;
+
+                        let tracked = toolCallItems.get(callId);
+                        if (!tracked) {
+                            tracked = {
+                                itemId: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                                name: toolCall.function?.name,
+                                arguments: '',
+                            };
+                            toolCallItems.set(callId, tracked);
+
+                            // Announce a function_call output item
+                            const addedCall = {
+                                type: 'response.output_item.added',
+                                output_index: 1 + toolCallItems.size, // after message
+                                item: {
+                                    type: 'function_call',
+                                    id: tracked.itemId,
+                                    call_id: callId,
+                                    name: tracked.name || toolCall.function?.name || 'tool',
+                                    arguments: '',
+                                },
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(addedCall)}\n\n`));
+                        }
+
+                        if (toolCall.function?.name && !tracked.name) {
+                            tracked.name = toolCall.function.name;
+                        }
+
                         if (toolCall.function?.arguments) {
+                            tracked.arguments += toolCall.function.arguments;
                             const funcDelta = {
                                 type: 'response.function_call_arguments.delta',
-                                item_id: outputItemId,
-                                output_index: 0,
-                                call_id: toolCall.id,
+                                item_id: tracked.itemId,
+                                output_index: 1 + toolCallItems.size,
+                                call_id: callId,
                                 delta: toolCall.function.arguments,
                             };
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(funcDelta)}\n\n`));
