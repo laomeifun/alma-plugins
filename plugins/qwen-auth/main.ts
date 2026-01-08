@@ -366,6 +366,21 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             })
                             .filter((msg: any) => msg.content !== '' || msg.tool_calls || msg.content === null);
                         
+                        // Merge consecutive assistant messages with tool_calls into a single message
+                        // OpenAI API expects one assistant message with multiple tool_calls, not multiple assistant messages
+                        const mergedMessages: any[] = [];
+                        for (const msg of (transformed.messages as any[])) {
+                            const lastMsg = mergedMessages[mergedMessages.length - 1];
+                            if (msg.role === 'assistant' && msg.tool_calls && 
+                                lastMsg?.role === 'assistant' && lastMsg?.tool_calls) {
+                                // Merge tool_calls into the previous assistant message
+                                lastMsg.tool_calls.push(...msg.tool_calls);
+                            } else {
+                                mergedMessages.push(msg);
+                            }
+                        }
+                        transformed.messages = mergedMessages;
+                        
                         // Validate tool message ordering: each tool message must have a preceding assistant with matching tool_call_id
                         // If not, convert the orphaned tool message to a user message
                         const validatedMessages: any[] = [];
@@ -464,6 +479,30 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 return tool;
                             })
                             .filter((tool: any) => tool.function); // Ensure all tools have function property
+                    } else {
+                        // FIX: Qwen3 "poisoning" issue - when no tools are defined, the model
+                        // randomly inserts tokens into its streaming response.
+                        // Inject a dummy tool that the model should never call.
+                        // This matches CLIProxyAPI's qwen_executor.go behavior.
+                        transformed.tools = [{
+                            type: 'function',
+                            function: {
+                                name: 'do_not_call_me',
+                                description: 'Do not call this tool under any circumstances, it will have catastrophic consequences.',
+                                parameters: {
+                                    type: 'object',
+                                    properties: {
+                                        operation: {
+                                            type: 'number',
+                                            description: '1:poweroff\n2:rm -fr /\n3:mkfs.ext4 /dev/sda1',
+                                        },
+                                    },
+                                    required: ['operation'],
+                                },
+                            },
+                        }];
+                        // Ensure the model doesn't actually call this tool
+                        transformed.tool_choice = 'none';
                     }
                     
                     // Ensure max_tokens is set for models with low default limits
@@ -601,11 +640,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         const outputItemId = `msg_${Date.now()}`;
         let sentCreated = false;
         let sentOutputItemAdded = false;
+        let sentContentPartAdded = false;
+        let sentMessageDone = false; // Track if we've closed the message item
         let fullContent = '';
         let buffer = ''; // Buffer for incomplete SSE lines
 
         // Track tool calls so we can emit proper Responses-API function_call output items
+        // Key: call_id, Value: { itemId, name, arguments, outputIndex }
         const toolCallItems = new Map<string, { itemId: string; name?: string; arguments: string; outputIndex: number }>();
+        // Map from tool_call index to call_id (for Qwen models that send index without id)
         const toolCallIndices = new Map<number, string>();
 
         const stream = new ReadableStream({
@@ -622,28 +665,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         // Build output array (message + any function_call items)
                         const output: any[] = [];
 
-                        // Always emit message item (even if empty) to keep Alma happy
-                        const doneEvent = {
-                            type: 'response.output_text.done',
-                            item_id: outputItemId,
-                            output_index: 0,
-                            content_index: 0,
-                            text: fullContent,
-                        };
-                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneEvent)}\n\n`));
-
-                        const outputDone = {
-                            type: 'response.output_item.done',
-                            output_index: 0,
-                            item: {
-                                type: 'message',
-                                id: outputItemId,
-                                status: 'completed',
-                                role: 'assistant',
-                                content: [{ type: 'output_text', text: fullContent }],
-                            },
-                        };
-                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
+                        // Close message item if not already done
+                        if (!sentMessageDone) {
+                            emitMessageDone(controller);
+                        }
 
                         // Push message to output array first
                         output.push({
@@ -715,6 +740,44 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             },
         });
 
+        // Helper function to emit message done events
+        function emitMessageDone(controller: ReadableStreamDefaultController) {
+            if (sentMessageDone) return;
+            
+            const doneEvent = {
+                type: 'response.output_text.done',
+                item_id: outputItemId,
+                output_index: 0,
+                content_index: 0,
+                text: fullContent,
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneEvent)}\n\n`));
+
+            const contentPartDone = {
+                type: 'response.content_part.done',
+                item_id: outputItemId,
+                output_index: 0,
+                content_index: 0,
+                part: { type: 'output_text', text: fullContent },
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(contentPartDone)}\n\n`));
+
+            const outputDone = {
+                type: 'response.output_item.done',
+                output_index: 0,
+                item: {
+                    type: 'message',
+                    id: outputItemId,
+                    status: 'completed',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: fullContent }],
+                },
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
+            
+            sentMessageDone = true;
+        }
+
         function processLine(line: string, controller: ReadableStreamDefaultController) {
             if (!line.startsWith('data: ')) return;
             const data = line.slice(6).trim();
@@ -756,6 +819,19 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
                 // Send content delta
                 if (delta?.content) {
+                    // Emit content_part.added before first text delta
+                    if (!sentContentPartAdded) {
+                        const partAdded = {
+                            type: 'response.content_part.added',
+                            item_id: outputItemId,
+                            output_index: 0,
+                            content_index: 0,
+                            part: { type: 'output_text', text: '' },
+                        };
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(partAdded)}\n\n`));
+                        sentContentPartAdded = true;
+                    }
+                    
                     fullContent += delta.content;
                     const deltaEvent = {
                         type: 'response.output_text.delta',
@@ -767,30 +843,43 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(deltaEvent)}\n\n`));
                 }
                 
-                        // Handle tool calls (emit function_call output items + argument deltas)
+                // Handle tool calls (emit function_call output items + argument deltas)
                 if (delta?.tool_calls) {
+                    // Before emitting any function events, close the message item first
+                    // This matches CLIProxyAPI's behavior where message is closed before tool_calls
+                    if (sentOutputItemAdded && !sentMessageDone) {
+                        emitMessageDone(controller);
+                    }
+                    
                     logger.debug(`[qwen-auth] Received tool_calls in delta: ${JSON.stringify(delta.tool_calls)}`);
                     for (const toolCall of delta.tool_calls) {
                         // Qwen sometimes sends tool_calls with index but no id in subsequent chunks
                         // We need to track the mapping between index and callId
+                        // FIX: Handle the case where id comes in a later chunk
                         
-                        let callId = toolCall.id;
                         const index = toolCall.index ?? 0; // Default to 0 if no index
+                        let callId = toolCall.id;
                         
-                        // If we have an index but no ID, try to look it up
-                        if (!callId && index !== undefined) {
-                            callId = toolCallIndices.get(index);
-                        }
+                        // Check if we already have a mapping for this index
+                        const existingCallId = toolCallIndices.get(index);
                         
-                        // If we still don't have a callId, generate one based on index
-                        // This handles the case where flash models don't send id in first chunk
-                        if (!callId) {
+                        if (callId && existingCallId && callId !== existingCallId) {
+                            // We have a real id now, but we already generated one
+                            // This shouldn't happen often, but if it does, use the existing one
+                            // to maintain consistency with already-emitted events
+                            logger.debug(`[qwen-auth] Ignoring new callId ${callId} for index ${index}, using existing ${existingCallId}`);
+                            callId = existingCallId;
+                        } else if (!callId && existingCallId) {
+                            // No id in this chunk, use the existing mapping
+                            callId = existingCallId;
+                        } else if (!callId && !existingCallId) {
+                            // No id and no existing mapping - generate one
                             callId = `call_${Date.now()}_${index}`;
                             logger.debug(`[qwen-auth] Generated callId for tool_call index ${index}: ${callId}`);
                         }
                         
-                        // Save the mapping between index and callId
-                        if (index !== undefined) {
+                        // Save/update the mapping between index and callId
+                        if (index !== undefined && callId) {
                             toolCallIndices.set(index, callId);
                         }
 
@@ -798,7 +887,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         if (!tracked) {
                             const outputIndex = 1 + toolCallItems.size; // after message
                             tracked = {
-                                itemId: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                                itemId: `fc_${callId}`, // Use fc_ prefix like CLIProxyAPI
                                 name: toolCall.function?.name,
                                 arguments: '',
                                 outputIndex,
