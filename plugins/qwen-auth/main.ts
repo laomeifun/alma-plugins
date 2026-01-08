@@ -15,6 +15,7 @@ import type { PluginContext, PluginActivation } from 'alma-plugin-api';
 import { TokenStore } from './lib/token-store';
 import { initiateDeviceFlow, pollForToken } from './lib/auth';
 import { QWEN_MODELS, getBaseModel } from './lib/models';
+import { logDebug, logInfo, logError, logWarn, getLogFilePath } from './lib/file-logger';
 
 // ============================================================================
 // Constants
@@ -49,6 +50,14 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     const { logger, storage, providers, commands, ui } = context;
 
     logger.info('Qwen Auth plugin activating...');
+    logInfo('Qwen Auth plugin activating...');
+    
+    // Log the log file path for debugging
+    const logPath = getLogFilePath();
+    if (logPath) {
+        logger.info(`[qwen-auth] Debug logs will be written to: ${logPath}`);
+        ui.showNotification(`Qwen Auth debug logs: ${logPath}`, { type: 'info', duration: 5000 });
+    }
 
     // Initialize token store
     const tokenStore = new TokenStore(storage.secrets, logger);
@@ -610,15 +619,20 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             if (!response.ok) {
                 const errorText = await response.clone().text();
                 logger.warn(`Qwen API response ${response.status}: ${errorText.slice(0, 500)}`);
+                logWarn(`Qwen API error response: ${response.status} - ${errorText.slice(0, 500)}`);
                 return response;
             }
 
             // Transform response from Chat Completions format to Responses API format
             if (isStreaming) {
                 // Transform streaming response
+                logInfo(`Transforming streaming response to Responses API format, URL: ${rewrittenUrl}`);
+                logger.info('[qwen-auth] Transforming streaming response to Responses API format');
                 return transformStreamingResponse(response);
             } else {
                 // Transform non-streaming response
+                logInfo(`Transforming non-streaming response to Responses API format, URL: ${rewrittenUrl}`);
+                logger.info('[qwen-auth] Transforming non-streaming response to Responses API format');
                 return await transformNonStreamingResponse(response);
             }
         };
@@ -628,7 +642,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
      * Transform streaming response from Chat Completions to Responses API format
      */
     const transformStreamingResponse = (response: Response): Response => {
+        logInfo('transformStreamingResponse called');
+        
         if (!response.body) {
+            logWarn('No response body, returning original response');
             return response;
         }
 
@@ -786,16 +803,23 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             try {
                 const chunk = JSON.parse(data);
                 
+                // Debug: log the raw chunk from Qwen
+                logDebug(`Raw chunk from Qwen: ${data.slice(0, 500)}`);
+                
                 // Handle empty choices array (some models send this for usage info)
                 if (!chunk.choices || chunk.choices.length === 0) {
                     // This might be a usage-only chunk, skip it
+                    logDebug('Empty choices array, skipping');
                     return;
                 }
                 
                 const delta = chunk.choices?.[0]?.delta;
                 const finishReason = chunk.choices?.[0]?.finish_reason;
                 
-                if (!delta && !finishReason) return;
+                if (!delta && !finishReason) {
+                    logDebug('No delta and no finishReason, skipping');
+                    return;
+                }
 
                 // Send initial events
                 if (!sentCreated) {
@@ -803,7 +827,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         type: 'response.created',
                         response: { id: responseId, status: 'in_progress', output: [] },
                     };
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(created)}\n\n`));
+                    const createdJson = JSON.stringify(created);
+                    logDebug(`Emitting response.created: ${createdJson}`);
+                    controller.enqueue(encoder.encode(`data: ${createdJson}\n\n`));
                     sentCreated = true;
                 }
 
@@ -813,7 +839,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         output_index: 0,
                         item: { type: 'message', id: outputItemId, status: 'in_progress', role: 'assistant', content: [] },
                     };
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(added)}\n\n`));
+                    const addedJson = JSON.stringify(added);
+                    logDebug(`Emitting response.output_item.added: ${addedJson}`);
+                    controller.enqueue(encoder.encode(`data: ${addedJson}\n\n`));
                     sentOutputItemAdded = true;
                 }
 
@@ -828,7 +856,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             content_index: 0,
                             part: { type: 'output_text', text: '' },
                         };
-                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(partAdded)}\n\n`));
+                        const partAddedJson = JSON.stringify(partAdded);
+                        logDebug(`Emitting response.content_part.added: ${partAddedJson}`);
+                        controller.enqueue(encoder.encode(`data: ${partAddedJson}\n\n`));
                         sentContentPartAdded = true;
                     }
                     
