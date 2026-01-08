@@ -97,6 +97,54 @@ export async function activate(context: PluginContext): Promise<PluginActivation
      * 5. Rewrites URLs for Qwen API compatibility
      */
     const createQwenFetch = (): typeof globalThis.fetch => {
+        
+        /**
+         * Recursively convert all input_text/output_text to text type
+         * This ensures Qwen API compatibility
+         */
+        const convertContentTypes = (obj: any): any => {
+            if (obj === null || obj === undefined) return obj;
+            
+            if (Array.isArray(obj)) {
+                return obj.map(item => convertContentTypes(item));
+            }
+            
+            if (typeof obj === 'object') {
+                // Convert input_text/output_text to text
+                if (obj.type === 'input_text' || obj.type === 'output_text') {
+                    return { type: 'text', text: obj.text || '' };
+                }
+                
+                // Recursively process all properties
+                const result: any = {};
+                for (const key of Object.keys(obj)) {
+                    result[key] = convertContentTypes(obj[key]);
+                }
+                return result;
+            }
+            
+            return obj;
+        };
+        
+        /**
+         * Simplify content array to string if all text
+         */
+        const simplifyContent = (content: any): any => {
+            if (typeof content === 'string') return content;
+            if (!Array.isArray(content)) return content;
+            
+            // Check if all items are text type
+            const allText = content.every((p: any) => 
+                p.type === 'text' || (typeof p === 'object' && p.text && !p.type)
+            );
+            
+            if (allText && content.length > 0) {
+                return content.map((p: any) => p.text || '').join('');
+            }
+            
+            return content;
+        };
+        
         return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
             // Extract URL string
             let url: string;
@@ -131,7 +179,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             
             if (init?.body && typeof init.body === 'string') {
                 try {
-                    const parsed = JSON.parse(init.body);
+                    let parsed = JSON.parse(init.body);
+                    
+                    // First, recursively convert all input_text/output_text to text
+                    parsed = convertContentTypes(parsed);
+                    
                     isStreaming = parsed.stream === true;
                     
                     // Transform from Responses API format to Chat Completions format
@@ -152,35 +204,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 // Convert to Chat Completions message format
                                 if (item.type === 'message') {
                                     const role = item.role === 'developer' ? 'system' : item.role;
-                                    let content: string | any[] = '';
-                                    
-                                    if (typeof item.content === 'string') {
-                                        content = item.content;
-                                    } else if (Array.isArray(item.content)) {
-                                        // Check if it's multimodal content (has images/videos)
-                                        const hasMultimodal = item.content.some((p: any) => 
-                                            p.type === 'image_url' || p.type === 'video_url' || p.type === 'video' || p.image_url
-                                        );
-                                        
-                                        if (hasMultimodal) {
-                                            // Keep as array, convert types
-                                            content = item.content.map((p: any) => {
-                                                // Convert input_text/output_text to text
-                                                if (p.type === 'input_text' || p.type === 'output_text') {
-                                                    return { type: 'text', text: p.text || '' };
-                                                }
-                                                // Keep other types as-is (image_url, video_url, video)
-                                                return p;
-                                            });
-                                        } else {
-                                            // Text only - extract and join
-                                            content = item.content
-                                                .filter((p: any) => p.type === 'input_text' || p.type === 'output_text' || p.type === 'text')
-                                                .map((p: any) => p.text || '')
-                                                .join('');
-                                        }
-                                    }
-                                    
+                                    const content = simplifyContent(item.content);
                                     return { role, content };
                                 }
                                 
@@ -212,7 +236,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 // Default: try to extract as message
                                 return {
                                     role: item.role || 'user',
-                                    content: item.content || item.text || '',
+                                    content: simplifyContent(item.content) || item.text || '',
                                 };
                             })
                             .filter((msg: any) => msg.content !== '' || msg.tool_calls || msg.content === null);
@@ -234,33 +258,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             }
                         }
                     } else if (Array.isArray(parsed.messages)) {
-                        // Already in messages format, but need to convert content types
-                        transformed.messages = parsed.messages.map((msg: any) => {
-                            if (typeof msg.content === 'string') {
-                                return msg;
-                            }
-                            if (Array.isArray(msg.content)) {
-                                // Convert input_text/output_text to text
-                                const convertedContent = msg.content.map((p: any) => {
-                                    if (p.type === 'input_text' || p.type === 'output_text') {
-                                        return { type: 'text', text: p.text || '' };
-                                    }
-                                    return p;
-                                });
-                                
-                                // If all parts are text, join them into a string
-                                const allText = convertedContent.every((p: any) => p.type === 'text');
-                                if (allText) {
-                                    return {
-                                        ...msg,
-                                        content: convertedContent.map((p: any) => p.text || '').join(''),
-                                    };
-                                }
-                                
-                                return { ...msg, content: convertedContent };
-                            }
-                            return msg;
-                        });
+                        // Already in messages format - content types already converted by convertContentTypes
+                        transformed.messages = parsed.messages.map((msg: any) => ({
+                            ...msg,
+                            content: simplifyContent(msg.content),
+                        }));
                         
                         // Ensure not empty
                         if ((transformed.messages as any[]).length === 0) {
