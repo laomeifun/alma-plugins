@@ -316,6 +316,22 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 try {
                     let parsed = JSON.parse(bodyText);
                     
+                    // Extra diagnostics: dump top-level keys and tool/function types
+                    const parsedKeys = Array.isArray(parsed) ? 'array' : Object.keys(parsed || {}).join(',');
+                    logDebug(`[qwen-auth] Parsed body keys: ${parsedKeys}`);
+                    const toolsType = parsed?.tools !== undefined ? typeof parsed.tools : 'absent';
+                    const functionsType = parsed?.functions !== undefined ? typeof parsed.functions : 'absent';
+                    logDebug(`[qwen-auth] tools type=${toolsType} functions type=${functionsType}`);
+                    if (parsed?.tools && !Array.isArray(parsed.tools)) {
+                        logWarn(`[qwen-auth] tools is not an array (type=${typeof parsed.tools})`);
+                    }
+                    if (parsed?.functions && !Array.isArray(parsed.functions)) {
+                        logWarn(`[qwen-auth] functions is not an array (type=${typeof parsed.functions})`);
+                    }
+                    if ((!parsed?.tools || parsed.tools.length === 0) && (!parsed?.functions || parsed.functions.length === 0)) {
+                        logDebug(`[qwen-auth] No tools/functions in request body, bodyText(first 400)=${bodyText.slice(0, 400)}`);
+                    }
+                    
                     // Debug: log the input to help diagnose issues
                     if (Array.isArray(parsed.input)) {
                         const inputTypes = parsed.input.map((item: any) => item.type);
