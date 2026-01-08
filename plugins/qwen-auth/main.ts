@@ -234,8 +234,33 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             }
                         }
                     } else if (Array.isArray(parsed.messages)) {
-                        // Already in messages format
-                        transformed.messages = parsed.messages;
+                        // Already in messages format, but need to convert content types
+                        transformed.messages = parsed.messages.map((msg: any) => {
+                            if (typeof msg.content === 'string') {
+                                return msg;
+                            }
+                            if (Array.isArray(msg.content)) {
+                                // Convert input_text/output_text to text
+                                const convertedContent = msg.content.map((p: any) => {
+                                    if (p.type === 'input_text' || p.type === 'output_text') {
+                                        return { type: 'text', text: p.text || '' };
+                                    }
+                                    return p;
+                                });
+                                
+                                // If all parts are text, join them into a string
+                                const allText = convertedContent.every((p: any) => p.type === 'text');
+                                if (allText) {
+                                    return {
+                                        ...msg,
+                                        content: convertedContent.map((p: any) => p.text || '').join(''),
+                                    };
+                                }
+                                
+                                return { ...msg, content: convertedContent };
+                            }
+                            return msg;
+                        });
                         
                         // Ensure not empty
                         if ((transformed.messages as any[]).length === 0) {
