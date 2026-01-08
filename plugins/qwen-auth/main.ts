@@ -195,19 +195,29 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     // Helper function to handle orphaned tool outputs
                     // This prevents infinite loops when function_call was an item_reference that got filtered
                     const normalizeOrphanedToolOutputs = (input: any[]): any[] => {
-                        // Collect all function call IDs
+                        // Collect all function call IDs from both function_call items and item_references
                         const functionCallIds = new Set<string>();
                         for (const item of input) {
                             if (item.type === 'function_call' && item.call_id) {
                                 functionCallIds.add(item.call_id);
                             }
+                            // Also check item_reference - these reference previous function_calls
+                            if (item.type === 'item_reference' && item.id) {
+                                // item_reference.id might be the call_id or item id
+                                functionCallIds.add(item.id);
+                            }
                         }
 
                         // Convert orphaned function_call_output items to messages
+                        // But if we have item_references, assume the function_call_output is valid
+                        const hasItemReferences = input.some(item => item.type === 'item_reference');
+                        
                         return input.map((item) => {
                             if (item.type === 'function_call_output') {
                                 const callId = item.call_id;
-                                const hasMatch = callId && functionCallIds.has(callId);
+                                // If we have item_references, trust that the function_call exists
+                                // Otherwise, check if we have a matching function_call
+                                const hasMatch = hasItemReferences || (callId && functionCallIds.has(callId));
                                 if (!hasMatch) {
                                     // Convert to message to preserve context
                                     const toolName = item.name || 'tool';
@@ -238,9 +248,65 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         // First, normalize orphaned tool outputs before filtering
                         let inputItems = normalizeOrphanedToolOutputs(parsed.input);
                         
+                        // Expand item_references: for each function_call_output, ensure there's a preceding
+                        // assistant message with tool_calls. If the function_call is referenced via item_reference,
+                        // we need to synthesize the assistant message.
+                        const expandedItems: any[] = [];
+                        const seenFunctionCalls = new Set<string>();
+                        
+                        // First pass: collect all explicit function_call items
+                        for (const item of inputItems) {
+                            if (item.type === 'function_call' && item.call_id) {
+                                seenFunctionCalls.add(item.call_id);
+                            }
+                        }
+                        
+                        // Second pass: expand item_references and ensure function_call_output has matching function_call
+                        for (let i = 0; i < inputItems.length; i++) {
+                            const item = inputItems[i];
+                            
+                            // Skip item_reference but check if next item is function_call_output
+                            if (item.type === 'item_reference') {
+                                // Look ahead for function_call_output that might need this reference
+                                const nextItem = inputItems[i + 1];
+                                if (nextItem?.type === 'function_call_output' && nextItem.call_id) {
+                                    // If we haven't seen this function_call, synthesize one
+                                    if (!seenFunctionCalls.has(nextItem.call_id)) {
+                                        expandedItems.push({
+                                            type: 'function_call',
+                                            call_id: nextItem.call_id,
+                                            name: nextItem.name || 'tool',
+                                            arguments: '{}',
+                                        });
+                                        seenFunctionCalls.add(nextItem.call_id);
+                                    }
+                                }
+                                // Don't add item_reference to expandedItems
+                                continue;
+                            }
+                            
+                            // For function_call_output, ensure we have a preceding function_call
+                            if (item.type === 'function_call_output' && item.call_id) {
+                                if (!seenFunctionCalls.has(item.call_id)) {
+                                    // Synthesize a function_call before this output
+                                    expandedItems.push({
+                                        type: 'function_call',
+                                        call_id: item.call_id,
+                                        name: item.name || 'tool',
+                                        arguments: '{}',
+                                    });
+                                    seenFunctionCalls.add(item.call_id);
+                                }
+                            }
+                            
+                            expandedItems.push(item);
+                        }
+                        
+                        inputItems = expandedItems;
+                        
                         transformed.messages = inputItems
                             .filter((item: any) => {
-                                // Filter out unsupported types
+                                // Filter out unsupported types (item_reference should already be removed)
                                 if (item.type === 'item_reference') return false;
                                 return true;
                             })

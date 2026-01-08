@@ -101,3 +101,15 @@ go test ./...
 2. **Empty arguments**: Default to `'{}'` not `''` for JSON parsing
 3. **Orphaned tool outputs**: Use `normalizeOrphanedToolOutputs()` to convert to user messages
 4. **Rate limiting**: Implement token refresh on 401, respect `retry-after` header on 429
+5. **item_reference handling**: OpenAI Responses API uses `item_reference` to reference previous items. When converting to Chat Completions format, synthesize the referenced `function_call` before `function_call_output`:
+   ```typescript
+   // If function_call_output has no matching function_call, synthesize one
+   if (!seenFunctionCalls.has(item.call_id)) {
+       expandedItems.push({
+           type: 'function_call',
+           call_id: item.call_id,
+           name: item.name || 'tool',
+           arguments: '{}',
+       });
+   }
+   ```
