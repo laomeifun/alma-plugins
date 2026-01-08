@@ -58,7 +58,7 @@
         {
             "id": "prompt-enhancer",
             "name": "Prompt Enhancer",
-            "version": "1.0.0",
+            "version": "1.0.1",
             "description": "Automatically enhances prompts with additional context and instructions for better AI responses",
             "author": {
                 "name": "Alma Team",
