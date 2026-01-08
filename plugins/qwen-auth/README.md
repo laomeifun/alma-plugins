@@ -84,7 +84,8 @@ No additional configuration is required. The plugin uses Qwen's public OAuth end
 
 ### API Endpoint
 
-- **Base URL**: `https://chat.qwen.ai/api/v1`
+- **Base URL**: `https://portal.qwen.ai/v1` (or custom `resource_url` from OAuth)
+- **Chat Completions**: `{base_url}/chat/completions`
 - **Format**: OpenAI-compatible API
 
 ### Token Refresh

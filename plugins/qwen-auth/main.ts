@@ -21,7 +21,15 @@ import { QWEN_MODELS, getBaseModel } from './lib/models';
 // ============================================================================
 
 // Qwen API base URL (OpenAI-compatible endpoint)
-const QWEN_API_BASE_URL = 'https://chat.qwen.ai/api/v1';
+// Default is portal.qwen.ai, but can be overridden by resource_url from OAuth
+const QWEN_DEFAULT_BASE_URL = 'https://portal.qwen.ai/v1';
+
+// Qwen-specific headers (matching CLIProxyAPI)
+const QWEN_HEADERS = {
+    USER_AGENT: 'google-api-nodejs-client/9.15.1',
+    X_GOOG_API_CLIENT: 'gl-node/22.17.0',
+    CLIENT_METADATA: 'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
+} as const;
 
 // HTTP status codes
 const HTTP_STATUS = {
@@ -69,9 +77,21 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     // =========================================================================
 
     /**
+     * Get the base URL for Qwen API
+     * Uses resource_url from OAuth if available, otherwise default
+     */
+    const getQwenBaseUrl = (): string => {
+        const tokens = tokenStore.getTokens();
+        if (tokens?.resource_url) {
+            return `https://${tokens.resource_url}/v1`;
+        }
+        return QWEN_DEFAULT_BASE_URL;
+    };
+
+    /**
      * Creates a custom fetch function that:
      * 1. Gets valid access token (refreshing if needed)
-     * 2. Adds authorization header
+     * 2. Adds Qwen-specific headers
      * 3. Handles rate limiting and errors
      * 4. Retries on 401 with token refresh
      */
@@ -87,10 +107,21 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 url = input.url;
             }
 
-            // Check if this is a Qwen API request
-            if (!url.includes('chat.qwen.ai')) {
+            // Check if this is a Qwen API request (portal.qwen.ai or custom resource_url)
+            if (!url.includes('qwen.ai') && !url.includes('portal.qwen')) {
                 // Not a Qwen request, pass through
                 return globalThis.fetch(input, init);
+            }
+
+            // Determine if streaming based on request body
+            let isStreaming = false;
+            if (init?.body && typeof init.body === 'string') {
+                try {
+                    const bodyJson = JSON.parse(init.body);
+                    isStreaming = bodyJson.stream === true;
+                } catch {
+                    // Ignore parse errors
+                }
             }
 
             // Helper function to make request with token
@@ -98,7 +129,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 const headers = new Headers(init?.headers);
                 headers.set('Authorization', `Bearer ${token}`);
                 headers.set('Content-Type', 'application/json');
-                headers.set('Accept', 'application/json');
+                headers.set('User-Agent', QWEN_HEADERS.USER_AGENT);
+                headers.set('X-Goog-Api-Client', QWEN_HEADERS.X_GOOG_API_CLIENT);
+                headers.set('Client-Metadata', QWEN_HEADERS.CLIENT_METADATA);
+                
+                if (isStreaming) {
+                    headers.set('Accept', 'text/event-stream');
+                } else {
+                    headers.set('Accept', 'application/json');
+                }
 
                 return globalThis.fetch(url, {
                     ...init,
@@ -290,7 +329,7 @@ Waiting for authorization...
             }
             return {
                 apiKey,
-                baseURL: QWEN_API_BASE_URL,
+                baseURL: getQwenBaseUrl(),
                 fetch: createQwenFetch(),
             };
         },
