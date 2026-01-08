@@ -555,6 +555,22 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         ui.showNotification('Logged out from all Antigravity accounts', { type: 'info' });
     });
 
+    const clearRateLimitsCommand = commands.register('clear-rate-limits', async () => {
+        const accountManager = tokenStore.getAccountManager();
+        const accounts = accountManager.getAccounts();
+        let clearedCount = 0;
+        for (const account of accounts) {
+            const keys = Object.keys(account.rateLimitResetTimes);
+            clearedCount += keys.length;
+            for (const key of keys) {
+                delete account.rateLimitResetTimes[key as keyof typeof account.rateLimitResetTimes];
+            }
+        }
+        await tokenStore.saveAccounts();
+        logger.info(`Cleared ${clearedCount} rate limit(s) from ${accounts.length} account(s)`);
+        ui.showNotification(`Cleared ${clearedCount} rate limit(s) from ${accounts.length} account(s)`, { type: 'success' });
+    });
+
     logger.info(`Antigravity Auth plugin activated with ${tokenStore.getAccountCount()} account(s)`);
 
     // =========================================================================
@@ -569,6 +585,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             removeAccountCommand.dispose();
             statusCommand.dispose();
             logoutCommand.dispose();
+            clearRateLimitsCommand.dispose();
             logger.info('Antigravity Auth plugin deactivated');
         },
     };
