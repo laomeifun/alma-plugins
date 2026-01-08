@@ -761,19 +761,24 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         // We need to track the mapping between index and callId
                         
                         let callId = toolCall.id;
-                        const index = toolCall.index;
+                        const index = toolCall.index ?? 0; // Default to 0 if no index
                         
                         // If we have an index but no ID, try to look it up
                         if (!callId && index !== undefined) {
                             callId = toolCallIndices.get(index);
                         }
                         
-                        // If we have both index and ID, save the mapping
-                        if (callId && index !== undefined) {
-                            toolCallIndices.set(index, callId);
+                        // If we still don't have a callId, generate one based on index
+                        // This handles the case where flash models don't send id in first chunk
+                        if (!callId) {
+                            callId = `call_${Date.now()}_${index}`;
+                            logger.debug(`[qwen-auth] Generated callId for tool_call index ${index}: ${callId}`);
                         }
                         
-                        if (!callId) continue;
+                        // Save the mapping between index and callId
+                        if (index !== undefined) {
+                            toolCallIndices.set(index, callId);
+                        }
 
                         let tracked = toolCallItems.get(callId);
                         if (!tracked) {
