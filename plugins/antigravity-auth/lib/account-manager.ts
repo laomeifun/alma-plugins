@@ -8,6 +8,7 @@
  */
 
 import type { AntigravityTokens } from './types';
+import type { QuotaData } from './quota';
 
 // ============================================================================
 // Types
@@ -50,6 +51,8 @@ export interface ManagedAccount {
     lastSwitchReason?: 'rate-limit' | 'initial' | 'rotation';
     /** Subscription tier (ULTRA > PRO > FREE) for priority sorting */
     subscriptionTier?: SubscriptionTier;
+    /** Real quota data from API */
+    quota?: QuotaData;
 }
 
 export interface AccountStorageData {
@@ -62,6 +65,7 @@ export interface AccountStorageData {
         lastUsed: number;
         rateLimitResetTimes?: Partial<Record<QuotaKey, number>>;
         subscriptionTier?: SubscriptionTier;
+        quota?: QuotaData;
     }>;
     activeIndexByFamily: {
         claude: number;
@@ -280,6 +284,7 @@ export class AccountManager {
             lastUsed: acc.lastUsed,
             rateLimitResetTimes: acc.rateLimitResetTimes || {},
             subscriptionTier: acc.subscriptionTier,
+            quota: acc.quota,
         }));
 
         // Auto-clear expired rate limits on load
@@ -319,6 +324,7 @@ export class AccountManager {
                     ? acc.rateLimitResetTimes
                     : undefined,
                 subscriptionTier: acc.subscriptionTier,
+                quota: acc.quota,
             })),
             activeIndexByFamily: {
                 claude: Math.max(0, this.currentAccountIndexByFamily.claude),

@@ -8,6 +8,7 @@
 import type { AntigravityTokens } from './types';
 import { refreshTokens, isTokenExpired } from './auth';
 import { AccountManager, type ManagedAccount, type ModelFamily, type HeaderStyle, type AccountStorageData, type RequestType, type RateLimitReason } from './account-manager';
+import { fetchQuota, type QuotaData } from './quota';
 
 // Storage keys
 const ACCOUNTS_STORAGE_KEY = 'antigravity_accounts';
@@ -285,6 +286,7 @@ export class TokenStore {
         projectId: string;
         isRateLimited?: boolean;
         rateLimitResetAt?: number;
+        quota?: QuotaData;
     }> {
         return this.accountManager.getAccounts().map(a => {
             // Check if rate limited for any family
@@ -299,8 +301,65 @@ export class TokenStore {
                 projectId: a.projectId,
                 isRateLimited,
                 rateLimitResetAt,
+                quota: a.quota,
             };
         });
+    }
+
+    /**
+     * Refresh quota for a specific account (internal, does not save)
+     */
+    private async refreshAccountQuotaInternal(account: ManagedAccount): Promise<QuotaData | undefined> {
+        try {
+            // Ensure we have a valid access token
+            if (!account.accessToken || !account.expiresAt || isTokenExpired(account.expiresAt)) {
+                this.logger.info(`Refreshing token for account ${account.index} (${account.email || 'unknown'})...`);
+                await this.refreshAccountToken(account);
+            }
+
+            if (!account.accessToken) {
+                this.logger.warn(`No access token for account ${account.index}, skipping quota refresh`);
+                return undefined;
+            }
+
+            this.logger.info(`Fetching quota for account ${account.index} (${account.email || 'unknown'})...`);
+            const quota = await fetchQuota(account.accessToken, account.projectId);
+            account.quota = quota;
+            this.logger.info(`Got ${quota.models.length} model(s) for account ${account.index}`);
+            return quota;
+        } catch (error) {
+            this.logger.warn(`Failed to refresh quota for account ${account.index} (${account.email || 'unknown'}):`, error);
+            return undefined;
+        }
+    }
+
+    /**
+     * Refresh quota for a specific account
+     */
+    async refreshAccountQuota(account: ManagedAccount): Promise<QuotaData | undefined> {
+        const quota = await this.refreshAccountQuotaInternal(account);
+        await this.saveAccounts();
+        return quota;
+    }
+
+    /**
+     * Refresh quota for all accounts
+     */
+    async refreshAllQuotas(): Promise<void> {
+        const accounts = this.accountManager.getAccounts();
+        this.logger.info(`Refreshing quotas for ${accounts.length} account(s)...`);
+
+        let successCount = 0;
+        for (const account of accounts) {
+            const quota = await this.refreshAccountQuotaInternal(account);
+            if (quota) {
+                successCount++;
+            }
+        }
+
+        // Save all at once
+        await this.saveAccounts();
+        this.logger.info(`Finished refreshing quotas: ${successCount}/${accounts.length} succeeded`);
     }
 
     // =========================================================================

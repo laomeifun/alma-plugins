@@ -364,8 +364,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 }
 
                 const tokens = await exchangeCodeForTokens(result.code, pendingState);
-                await tokenStore.addAccount(tokens);
+                const newAccount = await tokenStore.addAccount(tokens);
                 await tokenStore.clearPendingState();
+
+                // Refresh quota for the newly added account (await so UI shows quota immediately)
+                try {
+                    await tokenStore.refreshAccountQuota(newAccount);
+                } catch (err) {
+                    logger.warn('Failed to refresh quota for new account:', err);
+                }
 
                 const emailInfo = tokens.email ? ` (${tokens.email})` : '';
                 const totalAccounts = tokenStore.getAccountCount();
@@ -439,6 +446,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 label: a.email || `Account ${a.index + 1}`,
                 isRateLimited: a.isRateLimited,
                 rateLimitResetAt: a.rateLimitResetAt,
+                quota: a.quota ? {
+                    models: a.quota.models,
+                    lastUpdated: a.quota.lastUpdated,
+                } : undefined,
             }));
         },
 
@@ -455,6 +466,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 throw new Error(`Failed to remove account ${accountId}`);
             }
             logger.info(`Removed account ${accountId}`);
+        },
+
+        /**
+         * Refresh quota information for all accounts
+         */
+        async refreshQuotas() {
+            logger.info('Refreshing quotas for all accounts...');
+            await tokenStore.refreshAllQuotas();
+            logger.info('Quotas refreshed');
         },
     });
 
@@ -491,8 +511,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             }
 
             const tokens = await exchangeCodeForTokens(result.code, pendingState);
-            await tokenStore.addAccount(tokens);
+            const newAccount = await tokenStore.addAccount(tokens);
             await tokenStore.clearPendingState();
+
+            // Refresh quota for the newly added account (await so UI shows quota immediately)
+            try {
+                await tokenStore.refreshAccountQuota(newAccount);
+            } catch (err) {
+                logger.warn('Failed to refresh quota for new account:', err);
+            }
 
             const emailInfo = tokens.email ? ` (${tokens.email})` : '';
             ui.showNotification(`Added account${emailInfo}! Total: ${tokenStore.getAccountCount()}`, { type: 'success' });
@@ -575,7 +602,29 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         },
     });
 
+    const refreshQuotasCommand = commands.register('refresh-quotas', {
+        title: 'Refresh Quotas',
+        description: 'Refresh quota information for all Antigravity accounts',
+        handler: async () => {
+            const accountCount = tokenStore.getAccountCount();
+            if (accountCount === 0) {
+                ui.showNotification('No accounts connected', { type: 'warning' });
+                return;
+            }
+            ui.showNotification(`Refreshing quotas for ${accountCount} account(s)...`, { type: 'info' });
+            await tokenStore.refreshAllQuotas();
+            ui.showNotification(`Refreshed quotas for ${accountCount} account(s)`, { type: 'success' });
+        },
+    });
+
     logger.info(`Antigravity Auth plugin activated with ${tokenStore.getAccountCount()} account(s)`);
+
+    // Auto-refresh quotas on startup if accounts exist (async, non-blocking)
+    if (tokenStore.getAccountCount() > 0) {
+        void tokenStore.refreshAllQuotas().catch(err => {
+            logger.warn('Failed to refresh quotas on startup:', err);
+        });
+    }
 
     // =========================================================================
     // Cleanup
@@ -590,6 +639,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             statusCommand.dispose();
             logoutCommand.dispose();
             clearRateLimitsCommand.dispose();
+            refreshQuotasCommand.dispose();
             logger.info('Antigravity Auth plugin deactivated');
         },
     };
