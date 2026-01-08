@@ -198,10 +198,35 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                     content: item.content || item.text || '',
                                 };
                             })
-                            .filter((msg: any) => msg.content !== '' || msg.tool_calls);
+                            .filter((msg: any) => msg.content !== '' || msg.tool_calls || msg.content === null);
+                        
+                        // Ensure messages array is not empty
+                        if (!transformed.messages || (transformed.messages as any[]).length === 0) {
+                            transformed.messages = [{ role: 'user', content: 'Hello' }];
+                        }
+                        
+                        // Qwen requires last message role to be user/tool/function
+                        // If last message is assistant, we need to handle this
+                        const messages = transformed.messages as any[];
+                        if (messages.length > 0) {
+                            const lastMsg = messages[messages.length - 1];
+                            if (lastMsg.role === 'assistant' && !lastMsg.tool_calls) {
+                                // This is unusual - assistant message at the end without tool_calls
+                                // Add a placeholder user message
+                                messages.push({ role: 'user', content: 'Continue.' });
+                            }
+                        }
                     } else if (Array.isArray(parsed.messages)) {
                         // Already in messages format
                         transformed.messages = parsed.messages;
+                        
+                        // Ensure not empty
+                        if ((transformed.messages as any[]).length === 0) {
+                            transformed.messages = [{ role: 'user', content: 'Hello' }];
+                        }
+                    } else {
+                        // No input or messages, create default
+                        transformed.messages = [{ role: 'user', content: 'Hello' }];
                     }
                     
                     // Copy other supported parameters
@@ -341,109 +366,144 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         const encoder = new TextEncoder();
         const decoder = new TextDecoder();
 
-        let responseId = `resp_${Date.now()}`;
-        let outputItemId = `msg_${Date.now()}`;
+        const responseId = `resp_${Date.now()}`;
+        const outputItemId = `msg_${Date.now()}`;
         let sentCreated = false;
         let sentOutputItemAdded = false;
         let fullContent = '';
+        let buffer = ''; // Buffer for incomplete SSE lines
 
         const stream = new ReadableStream({
             async pull(controller) {
-                const { done, value } = await reader.read();
-                
-                if (done) {
-                    // Send completion events
-                    const doneEvent = {
-                        type: 'response.output_text.done',
-                        item_id: outputItemId,
-                        output_index: 0,
-                        content_index: 0,
-                        text: fullContent,
-                    };
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneEvent)}\n\n`));
+                try {
+                    const { done, value } = await reader.read();
+                    
+                    if (done) {
+                        // Process any remaining buffer
+                        if (buffer.trim()) {
+                            processLine(buffer, controller);
+                        }
+                        
+                        // Send completion events
+                        const doneEvent = {
+                            type: 'response.output_text.done',
+                            item_id: outputItemId,
+                            output_index: 0,
+                            content_index: 0,
+                            text: fullContent,
+                        };
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneEvent)}\n\n`));
 
-                    const outputDone = {
-                        type: 'response.output_item.done',
-                        output_index: 0,
-                        item: {
-                            type: 'message',
-                            id: outputItemId,
-                            role: 'assistant',
-                            content: [{ type: 'output_text', text: fullContent }],
-                        },
-                    };
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
-
-                    const completed = {
-                        type: 'response.completed',
-                        response: {
-                            id: responseId,
-                            status: 'completed',
-                            output: [{
+                        const outputDone = {
+                            type: 'response.output_item.done',
+                            output_index: 0,
+                            item: {
                                 type: 'message',
                                 id: outputItemId,
                                 role: 'assistant',
                                 content: [{ type: 'output_text', text: fullContent }],
-                            }],
-                        },
-                    };
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
-                    controller.close();
-                    return;
-                }
+                            },
+                        };
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
 
-                const text = decoder.decode(value, { stream: true });
-                const lines = text.split('\n');
-
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const data = line.slice(6).trim();
-                    if (data === '[DONE]') continue;
-
-                    try {
-                        const chunk = JSON.parse(data);
-                        const delta = chunk.choices?.[0]?.delta;
-                        
-                        if (!delta) continue;
-
-                        // Send initial events
-                        if (!sentCreated) {
-                            const created = {
-                                type: 'response.created',
-                                response: { id: responseId, status: 'in_progress', output: [] },
-                            };
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(created)}\n\n`));
-                            sentCreated = true;
-                        }
-
-                        if (!sentOutputItemAdded && (delta.content || delta.role)) {
-                            const added = {
-                                type: 'response.output_item.added',
-                                output_index: 0,
-                                item: { type: 'message', id: outputItemId, role: 'assistant', content: [] },
-                            };
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(added)}\n\n`));
-                            sentOutputItemAdded = true;
-                        }
-
-                        // Send content delta
-                        if (delta.content) {
-                            fullContent += delta.content;
-                            const deltaEvent = {
-                                type: 'response.output_text.delta',
-                                item_id: outputItemId,
-                                output_index: 0,
-                                content_index: 0,
-                                delta: delta.content,
-                            };
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(deltaEvent)}\n\n`));
-                        }
-                    } catch {
-                        // Skip malformed JSON
+                        const completed = {
+                            type: 'response.completed',
+                            response: {
+                                id: responseId,
+                                status: 'completed',
+                                output: [{
+                                    type: 'message',
+                                    id: outputItemId,
+                                    role: 'assistant',
+                                    content: [{ type: 'output_text', text: fullContent }],
+                                }],
+                            },
+                        };
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
+                        controller.close();
+                        return;
                     }
+
+                    const text = decoder.decode(value, { stream: true });
+                    buffer += text;
+                    
+                    // Process complete lines
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || ''; // Keep incomplete line in buffer
+                    
+                    for (const line of lines) {
+                        processLine(line, controller);
+                    }
+                } catch (error) {
+                    controller.error(error);
                 }
             },
         });
+
+        function processLine(line: string, controller: ReadableStreamDefaultController) {
+            if (!line.startsWith('data: ')) return;
+            const data = line.slice(6).trim();
+            if (data === '[DONE]' || data === '') return;
+
+            try {
+                const chunk = JSON.parse(data);
+                const delta = chunk.choices?.[0]?.delta;
+                const finishReason = chunk.choices?.[0]?.finish_reason;
+                
+                if (!delta && !finishReason) return;
+
+                // Send initial events
+                if (!sentCreated) {
+                    const created = {
+                        type: 'response.created',
+                        response: { id: responseId, status: 'in_progress', output: [] },
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(created)}\n\n`));
+                    sentCreated = true;
+                }
+
+                if (!sentOutputItemAdded && delta && (delta.content || delta.role)) {
+                    const added = {
+                        type: 'response.output_item.added',
+                        output_index: 0,
+                        item: { type: 'message', id: outputItemId, role: 'assistant', content: [] },
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(added)}\n\n`));
+                    sentOutputItemAdded = true;
+                }
+
+                // Send content delta
+                if (delta?.content) {
+                    fullContent += delta.content;
+                    const deltaEvent = {
+                        type: 'response.output_text.delta',
+                        item_id: outputItemId,
+                        output_index: 0,
+                        content_index: 0,
+                        delta: delta.content,
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(deltaEvent)}\n\n`));
+                }
+                
+                // Handle tool calls
+                if (delta?.tool_calls) {
+                    for (const toolCall of delta.tool_calls) {
+                        if (toolCall.function?.arguments) {
+                            const funcDelta = {
+                                type: 'response.function_call_arguments.delta',
+                                item_id: outputItemId,
+                                output_index: 0,
+                                call_id: toolCall.id,
+                                delta: toolCall.function.arguments,
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(funcDelta)}\n\n`));
+                        }
+                    }
+                }
+            } catch {
+                // Skip malformed JSON
+            }
+        }
 
         return new Response(stream, {
             status: response.status,
@@ -463,7 +523,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         
         try {
             const data = JSON.parse(text);
-            const message = data.choices?.[0]?.message;
+            const choice = data.choices?.[0];
+            const message = choice?.message;
             
             if (!message) {
                 return new Response(text, {
@@ -476,20 +537,51 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             const responseId = `resp_${data.id || Date.now()}`;
             const outputItemId = `msg_${Date.now()}`;
 
-            const transformed = {
-                id: responseId,
-                object: 'response',
-                created_at: data.created || Math.floor(Date.now() / 1000),
-                status: 'completed',
-                output: [{
+            // Build output array
+            const output: any[] = [];
+            
+            // Add message content
+            if (message.content) {
+                output.push({
                     type: 'message',
                     id: outputItemId,
                     role: 'assistant',
                     content: [{
                         type: 'output_text',
-                        text: message.content || '',
+                        text: message.content,
                     }],
-                }],
+                });
+            }
+            
+            // Add tool calls if present
+            if (message.tool_calls && message.tool_calls.length > 0) {
+                for (const toolCall of message.tool_calls) {
+                    output.push({
+                        type: 'function_call',
+                        id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                        call_id: toolCall.id,
+                        name: toolCall.function?.name,
+                        arguments: toolCall.function?.arguments || '{}',
+                    });
+                }
+            }
+            
+            // If no output, add empty message
+            if (output.length === 0) {
+                output.push({
+                    type: 'message',
+                    id: outputItemId,
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: '' }],
+                });
+            }
+
+            const transformed = {
+                id: responseId,
+                object: 'response',
+                created_at: data.created || Math.floor(Date.now() / 1000),
+                status: 'completed',
+                output,
                 usage: data.usage ? {
                     input_tokens: data.usage.prompt_tokens,
                     output_tokens: data.usage.completion_tokens,

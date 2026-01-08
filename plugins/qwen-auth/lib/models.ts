@@ -2,13 +2,16 @@
  * Qwen Model Definitions
  *
  * Defines the available Qwen models and their capabilities.
- * Based on CLIProxyAPI's model registry.
+ * Based on CLIProxyAPI's GetQwenModels() function.
+ * 
+ * Note: Only models supported by Qwen OAuth are included here.
+ * Other models like qwen3-max are available via iFlow provider, not Qwen OAuth.
  */
 
 import type { QwenModelInfo } from './types';
 
 // ============================================================================
-// Model Definitions
+// Model Definitions (from CLIProxyAPI GetQwenModels)
 // ============================================================================
 
 export const QWEN_MODELS: QwenModelInfo[] = [
@@ -30,34 +33,7 @@ export const QWEN_MODELS: QwenModelInfo[] = [
         maxOutputTokens: 2048,
     },
 
-    // Qwen3 General Models
-    {
-        id: 'qwen3-max',
-        name: 'Qwen3 Max',
-        description: 'Qwen3 flagship model with maximum capabilities',
-        baseModel: 'qwen3-max',
-        contextWindow: 32768,
-        maxOutputTokens: 8192,
-    },
-    {
-        id: 'qwen3-max-preview',
-        name: 'Qwen3 Max Preview',
-        description: 'Qwen3 Max preview build with latest features',
-        baseModel: 'qwen3-max-preview',
-        contextWindow: 32768,
-        maxOutputTokens: 8192,
-    },
-
-    // Qwen3 Vision Models
-    {
-        id: 'qwen3-vl-plus',
-        name: 'Qwen3 VL Plus',
-        description: 'Qwen3 multimodal vision-language model',
-        baseModel: 'qwen3-vl-plus',
-        contextWindow: 32768,
-        maxOutputTokens: 8192,
-        vision: true,
-    },
+    // Qwen3 Vision Model
     {
         id: 'vision-model',
         name: 'Qwen3 Vision Model',
@@ -66,41 +42,6 @@ export const QWEN_MODELS: QwenModelInfo[] = [
         contextWindow: 32768,
         maxOutputTokens: 2048,
         vision: true,
-    },
-
-    // Qwen3 Large Models
-    {
-        id: 'qwen3-235b-a22b-thinking-2507',
-        name: 'Qwen3 235B Thinking',
-        description: 'Qwen3 235B A22B Thinking model with reasoning capabilities',
-        baseModel: 'qwen3-235b-a22b-thinking-2507',
-        contextWindow: 32768,
-        maxOutputTokens: 8192,
-        reasoning: true,
-    },
-    {
-        id: 'qwen3-235b-a22b-instruct',
-        name: 'Qwen3 235B Instruct',
-        description: 'Qwen3 235B A22B Instruct model',
-        baseModel: 'qwen3-235b-a22b-instruct',
-        contextWindow: 32768,
-        maxOutputTokens: 8192,
-    },
-    {
-        id: 'qwen3-235b',
-        name: 'Qwen3 235B',
-        description: 'Qwen3 235B A22B base model',
-        baseModel: 'qwen3-235b',
-        contextWindow: 32768,
-        maxOutputTokens: 8192,
-    },
-    {
-        id: 'qwen3-32b',
-        name: 'Qwen3 32B',
-        description: 'Qwen3 32B efficient model',
-        baseModel: 'qwen3-32b',
-        contextWindow: 32768,
-        maxOutputTokens: 8192,
     },
 ];
 
