@@ -280,9 +280,33 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     if (parsed.max_output_tokens !== undefined) transformed.max_tokens = parsed.max_output_tokens;
                     if (parsed.stop !== undefined) transformed.stop = parsed.stop;
                     
-                    // Handle tools
+                    // Handle tools - convert from Responses API format to Chat Completions format
                     if (Array.isArray(parsed.tools) && parsed.tools.length > 0) {
-                        transformed.tools = parsed.tools;
+                        transformed.tools = parsed.tools
+                            .filter((tool: any) => tool && (tool.type === 'function' || tool.function))
+                            .map((tool: any) => {
+                                // If tool already has function property, use it
+                                if (tool.function) {
+                                    return {
+                                        type: 'function',
+                                        function: tool.function,
+                                    };
+                                }
+                                // If tool is in Responses API format (name, description, parameters at top level)
+                                if (tool.name) {
+                                    return {
+                                        type: 'function',
+                                        function: {
+                                            name: tool.name,
+                                            description: tool.description || '',
+                                            parameters: tool.parameters || tool.input_schema || { type: 'object', properties: {} },
+                                        },
+                                    };
+                                }
+                                // Return as-is if already in correct format
+                                return tool;
+                            })
+                            .filter((tool: any) => tool.function); // Ensure all tools have function property
                     }
                     
                     // Add stream_options for usage tracking
