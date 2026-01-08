@@ -154,6 +154,23 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             
             return content;
         };
+
+        const mapToolChoice = (choice: any): any => {
+            if (choice == null) return choice;
+            if (typeof choice === 'string') return choice;
+
+            if (typeof choice === 'object') {
+                const choiceType = (choice as any).type;
+                const functionName = (choice as any).function?.name ?? (choice as any).name;
+
+                if (choiceType === 'function' && typeof functionName === 'string' && functionName.trim().length > 0) {
+                    // Normalize to Chat Completions tool_choice shape
+                    return { type: 'function', function: { name: functionName } };
+                }
+            }
+
+            return choice;
+        };
         
         return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
             // Extract URL string
@@ -540,6 +557,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             byIndex,
                             defaultName: nonDummy.length === 1 ? nonDummy[0] : undefined,
                         };
+                    }
+
+                    // Preserve tool_choice when provided (tool tests may force required tool use)
+                    if (Array.isArray(parsed.tools) && parsed.tools.length > 0 && parsed.tool_choice !== undefined) {
+                        transformed.tool_choice = mapToolChoice(parsed.tool_choice);
                     }
                     
                     // Ensure max_tokens is set for models with low default limits
@@ -1084,6 +1106,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         toolNameHints?: { byIndex: Map<number, string>; defaultName?: string }
     ): Promise<Response> => {
         const text = await response.text();
+        logDebug(`transformNonStreamingResponse raw text (first 500): ${text.slice(0, 500)}`);
         
         try {
             const data = JSON.parse(text);
@@ -1091,12 +1114,16 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             const message = choice?.message;
             
             if (!message) {
+                logWarn('transformNonStreamingResponse: missing message in choices[0], returning raw response');
                 return new Response(text, {
                     status: response.status,
                     statusText: response.statusText,
                     headers: response.headers,
                 });
             }
+
+            const toolCallsCount = Array.isArray(message.tool_calls) ? message.tool_calls.length : 0;
+            logDebug(`transformNonStreamingResponse parsed: model=${data.model || ''}, tool_calls=${toolCallsCount}, contentType=${typeof message.content}`);
 
             const responseId = `resp_${data.id || Date.now()}`;
             const outputItemId = `msg_${Date.now()}`;
@@ -1136,6 +1163,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         : `call_${Date.now()}_${i}`;
                     const rawArgs = toolCall.function?.arguments;
                     const args = typeof rawArgs === 'string' && rawArgs.trim().length > 0 ? rawArgs : '{}';
+                    logDebug(
+                        `transformNonStreamingResponse tool_call[${i}]: name=${toolCall.function?.name || hintedName || 'tool'}, call_id=${callId}, argsLen=${args.length}`
+                    );
                     output.push({
                         type: 'function_call',
                         id: `fc_${callId}`,
