@@ -466,6 +466,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             .filter((tool: any) => tool.function); // Ensure all tools have function property
                     }
                     
+                    // Ensure max_tokens is set for models with low default limits
+                    // This is especially important for flash models
+                    if (!transformed.max_tokens) {
+                        transformed.max_tokens = 8192; // Default to 8K tokens
+                    }
+                    
                     // Add stream_options for usage tracking
                     if (isStreaming) {
                         transformed.stream_options = { include_usage: true };
@@ -716,6 +722,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
             try {
                 const chunk = JSON.parse(data);
+                
+                // Handle empty choices array (some models send this for usage info)
+                if (!chunk.choices || chunk.choices.length === 0) {
+                    // This might be a usage-only chunk, skip it
+                    return;
+                }
+                
                 const delta = chunk.choices?.[0]?.delta;
                 const finishReason = chunk.choices?.[0]?.finish_reason;
                 
@@ -756,6 +769,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 
                         // Handle tool calls (emit function_call output items + argument deltas)
                 if (delta?.tool_calls) {
+                    logger.debug(`[qwen-auth] Received tool_calls in delta: ${JSON.stringify(delta.tool_calls)}`);
                     for (const toolCall of delta.tool_calls) {
                         // Qwen sometimes sends tool_calls with index but no id in subsequent chunks
                         // We need to track the mapping between index and callId
