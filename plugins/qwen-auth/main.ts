@@ -152,16 +152,33 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 // Convert to Chat Completions message format
                                 if (item.type === 'message') {
                                     const role = item.role === 'developer' ? 'system' : item.role;
-                                    let content = '';
+                                    let content: string | any[] = '';
                                     
                                     if (typeof item.content === 'string') {
                                         content = item.content;
                                     } else if (Array.isArray(item.content)) {
-                                        // Extract text from content parts
-                                        content = item.content
-                                            .filter((p: any) => p.type === 'input_text' || p.type === 'output_text' || p.type === 'text')
-                                            .map((p: any) => p.text || '')
-                                            .join('');
+                                        // Check if it's multimodal content (has images/videos)
+                                        const hasMultimodal = item.content.some((p: any) => 
+                                            p.type === 'image_url' || p.type === 'video_url' || p.type === 'video' || p.image_url
+                                        );
+                                        
+                                        if (hasMultimodal) {
+                                            // Keep as array, convert types
+                                            content = item.content.map((p: any) => {
+                                                // Convert input_text/output_text to text
+                                                if (p.type === 'input_text' || p.type === 'output_text') {
+                                                    return { type: 'text', text: p.text || '' };
+                                                }
+                                                // Keep other types as-is (image_url, video_url, video)
+                                                return p;
+                                            });
+                                        } else {
+                                            // Text only - extract and join
+                                            content = item.content
+                                                .filter((p: any) => p.type === 'input_text' || p.type === 'output_text' || p.type === 'text')
+                                                .map((p: any) => p.text || '')
+                                                .join('');
+                                        }
                                     }
                                     
                                     return { role, content };
