@@ -728,9 +728,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             content: [{ type: 'output_text', text: fullContent }],
                         });
 
-                        // Finalize any function_call items if not already done
+                        // Ensure final response includes tool calls even if we already finalized early
                         if (!toolCallsFinalized) {
                             finalizeToolCalls(controller, output);
+                        } else if (toolCallItems.size > 0) {
+                            appendToolCallsToOutput(output);
                         }
 
                         const completed = {
@@ -863,6 +865,21 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 output.push(callItem);
             }
             toolCallsFinalized = true;
+        }
+
+        function appendToolCallsToOutput(output: any[]) {
+            const entries = Array.from(toolCallItems.entries()).sort((a, b) => a[1].outputIndex - b[1].outputIndex);
+            for (const [callId, item] of entries) {
+                const finalArgs = item.arguments || '{}';
+                output.push({
+                    type: 'function_call',
+                    id: item.itemId,
+                    status: 'completed',
+                    call_id: callId,
+                    name: item.name || 'tool',
+                    arguments: finalArgs,
+                });
+            }
         }
 
         function processLine(line: string, controller: ReadableStreamDefaultController) {
@@ -1087,45 +1104,47 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             // Build output array
             const output: any[] = [];
             
-            // Add message content
-            if (message.content) {
-                output.push({
-                    type: 'message',
-                    id: outputItemId,
-                    status: 'completed',
-                    role: 'assistant',
-                    content: [{
-                        type: 'output_text',
-                        text: message.content,
-                    }],
-                });
+            // Always include a message output item first (even if empty) to match Responses API expectations
+            let messageText = '';
+            if (typeof message.content === 'string') {
+                messageText = message.content;
+            } else if (Array.isArray(message.content)) {
+                messageText = message.content.map((p: any) => p?.text ?? '').join('');
+            } else if (message.content != null) {
+                messageText = String(message.content);
             }
+
+            output.push({
+                type: 'message',
+                id: outputItemId,
+                status: 'completed',
+                role: 'assistant',
+                content: [{
+                    type: 'output_text',
+                    text: messageText,
+                }],
+            });
             
             // Add tool calls if present
             if (message.tool_calls && message.tool_calls.length > 0) {
                 for (let i = 0; i < message.tool_calls.length; i++) {
                     const toolCall = message.tool_calls[i];
-                    const hintedName = toolNameHints?.byIndex.get(i) || toolNameHints?.defaultName;
+                    const hintedName = toolNameHints?.defaultName;
+                    const rawCallId = toolCall.id;
+                    const callId = typeof rawCallId === 'string' && rawCallId.trim().length > 0
+                        ? rawCallId
+                        : `call_${Date.now()}_${i}`;
+                    const rawArgs = toolCall.function?.arguments;
+                    const args = typeof rawArgs === 'string' && rawArgs.trim().length > 0 ? rawArgs : '{}';
                     output.push({
                         type: 'function_call',
-                        id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                        id: `fc_${callId}`,
                         status: 'completed',
-                        call_id: toolCall.id,
-                        name: toolCall.function?.name || hintedName,
-                        arguments: toolCall.function?.arguments || '{}',
+                        call_id: callId,
+                        name: toolCall.function?.name || hintedName || 'tool',
+                        arguments: args,
                     });
                 }
-            }
-            
-            // If no output, add empty message
-            if (output.length === 0) {
-                output.push({
-                    type: 'message',
-                    id: outputItemId,
-                    status: 'completed',
-                    role: 'assistant',
-                    content: [{ type: 'output_text', text: '' }],
-                });
             }
 
             const transformed = {
