@@ -153,7 +153,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 throw new Error(`Authentication required: ${error instanceof Error ? error.message : 'Unknown error'}`);
             }
 
-            logger.debug(`Making request to ${url}`);
+            logger.info(`Making Qwen request to: ${url}`);
+            logger.debug(`Streaming: ${isStreaming}, Token length: ${accessToken.length}`);
 
             // Make the request
             let response = await makeRequest(accessToken);
@@ -182,6 +183,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 }
             }
 
+            // Handle 404 Not Found - likely wrong URL or model
+            if (response.status === 404) {
+                const errorText = await response.clone().text();
+                logger.error(`404 Not Found: ${url}`, errorText);
+                logger.error('This may indicate wrong API endpoint or unsupported model');
+            }
+
             // Handle rate limiting
             if (response.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
                 const retryAfterMs = parseRetryAfter(response);
@@ -200,6 +208,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             if (response.status >= HTTP_STATUS.SERVER_ERROR) {
                 const errorText = await response.clone().text();
                 logger.error(`Server error: ${response.status}`, errorText);
+            }
+
+            // Log non-OK responses for debugging
+            if (!response.ok) {
+                const errorText = await response.clone().text();
+                logger.warn(`Qwen API response ${response.status}: ${errorText.slice(0, 500)}`);
             }
 
             return response;
@@ -319,16 +333,11 @@ Waiting for authorization...
 
         /**
          * Returns SDK configuration for AI SDK's createOpenAI().
+         * Uses dummy API key since actual auth is handled in custom fetch.
          */
         async getSDKConfig() {
-            let apiKey: string;
-            try {
-                apiKey = await tokenStore.getValidAccessToken();
-            } catch {
-                apiKey = 'qwen-not-authenticated';
-            }
             return {
-                apiKey,
+                apiKey: 'qwen-oauth', // Dummy key, actual auth in custom fetch
                 baseURL: getQwenBaseUrl(),
                 fetch: createQwenFetch(),
             };
