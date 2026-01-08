@@ -255,21 +255,21 @@ Waiting for authorization...
             }));
         },
 
-        async getApiKey() {
-            // Return access token as API key for OpenAI-compatible SDK
+        /**
+         * Returns SDK configuration for AI SDK's createOpenAI().
+         */
+        async getSDKConfig() {
+            let apiKey: string;
             try {
-                return await tokenStore.getValidAccessToken();
+                apiKey = await tokenStore.getValidAccessToken();
             } catch {
-                return undefined;
+                apiKey = 'qwen-not-authenticated';
             }
-        },
-
-        getBaseUrl() {
-            return QWEN_API_BASE_URL;
-        },
-
-        getCustomFetch() {
-            return createQwenFetch();
+            return {
+                apiKey,
+                baseURL: QWEN_API_BASE_URL,
+                fetch: createQwenFetch(),
+            };
         },
     });
 
