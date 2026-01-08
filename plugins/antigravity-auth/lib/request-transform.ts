@@ -331,8 +331,41 @@ export function transformRequest(
         }
     }
 
-    // Add image generation config for Gemini image models
+    // [NEW] Antigravity 身份注入 (原始简化版)
+    // Only inject for non-image generation requests
     const isImage = isImageModel(requestedModel);
+    if (!isImage) {
+        const antigravityIdentity = `You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.
+You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.
+**Absolute paths only**
+**Proactiveness**`;
+
+        // [HYBRID] 检查用户是否已提供 Antigravity 身份
+        let userHasAntigravity = false;
+        if (geminiRequest.systemInstruction?.parts) {
+            for (const part of geminiRequest.systemInstruction.parts) {
+                if (part.text && part.text.includes('You are Antigravity')) {
+                    userHasAntigravity = true;
+                    break;
+                }
+            }
+        }
+
+        // 如果用户没有提供 Antigravity 身份,则注入
+        if (!userHasAntigravity) {
+            if (geminiRequest.systemInstruction?.parts) {
+                // 在前面插入 Antigravity 身份
+                geminiRequest.systemInstruction.parts.unshift({ text: antigravityIdentity });
+            } else {
+                // 没有 systemInstruction,创建一个新的
+                geminiRequest.systemInstruction = {
+                    parts: [{ text: antigravityIdentity }],
+                };
+            }
+        }
+    }
+
+    // Add image generation config for Gemini image models
     if (isImage) {
         const aspectRatio = parseImageAspectRatio(requestedModel);
         const imageSize = parseImageSize(requestedModel);
