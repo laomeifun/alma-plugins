@@ -512,6 +512,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 apiKey: DUMMY_API_KEY,
                 baseURL: CODEX_BASE_URL,
                 fetch: createCodexFetch(),
+                useResponsesAPI: true,
             };
         },
     });
