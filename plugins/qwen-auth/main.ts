@@ -192,9 +192,53 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         stream: isStreaming,
                     };
                     
+                    // Helper function to handle orphaned tool outputs
+                    // This prevents infinite loops when function_call was an item_reference that got filtered
+                    const normalizeOrphanedToolOutputs = (input: any[]): any[] => {
+                        // Collect all function call IDs
+                        const functionCallIds = new Set<string>();
+                        for (const item of input) {
+                            if (item.type === 'function_call' && item.call_id) {
+                                functionCallIds.add(item.call_id);
+                            }
+                        }
+
+                        // Convert orphaned function_call_output items to messages
+                        return input.map((item) => {
+                            if (item.type === 'function_call_output') {
+                                const callId = item.call_id;
+                                const hasMatch = callId && functionCallIds.has(callId);
+                                if (!hasMatch) {
+                                    // Convert to message to preserve context
+                                    const toolName = item.name || 'tool';
+                                    const labelCallId = callId || 'unknown';
+                                    let text: string;
+                                    try {
+                                        text = typeof item.output === 'string' ? item.output : JSON.stringify(item.output);
+                                    } catch {
+                                        text = String(item.output ?? '');
+                                    }
+                                    // Truncate very long outputs to avoid context overflow
+                                    if (text.length > 16000) {
+                                        text = text.slice(0, 16000) + '\n...[truncated]';
+                                    }
+                                    return {
+                                        type: 'message',
+                                        role: 'user',
+                                        content: `[Previous ${toolName} result; call_id=${labelCallId}]: ${text}`,
+                                    };
+                                }
+                            }
+                            return item;
+                        });
+                    };
+
                     // Convert 'input' array to 'messages' array
                     if (Array.isArray(parsed.input)) {
-                        transformed.messages = parsed.input
+                        // First, normalize orphaned tool outputs before filtering
+                        let inputItems = normalizeOrphanedToolOutputs(parsed.input);
+                        
+                        transformed.messages = inputItems
                             .filter((item: any) => {
                                 // Filter out unsupported types
                                 if (item.type === 'item_reference') return false;
@@ -240,6 +284,33 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 };
                             })
                             .filter((msg: any) => msg.content !== '' || msg.tool_calls || msg.content === null);
+                        
+                        // Validate tool message ordering: each tool message must have a preceding assistant with matching tool_call_id
+                        // If not, convert the orphaned tool message to a user message
+                        const validatedMessages: any[] = [];
+                        const seenToolCallIds = new Set<string>();
+                        
+                        for (const msg of (transformed.messages as any[])) {
+                            if (msg.role === 'assistant' && msg.tool_calls) {
+                                for (const tc of msg.tool_calls) {
+                                    if (tc.id) seenToolCallIds.add(tc.id);
+                                }
+                                validatedMessages.push(msg);
+                            } else if (msg.role === 'tool' && msg.tool_call_id) {
+                                if (seenToolCallIds.has(msg.tool_call_id)) {
+                                    validatedMessages.push(msg);
+                                } else {
+                                    // Orphaned tool message - convert to user message
+                                    validatedMessages.push({
+                                        role: 'user',
+                                        content: `[Tool result; call_id=${msg.tool_call_id}]: ${msg.content}`,
+                                    });
+                                }
+                            } else {
+                                validatedMessages.push(msg);
+                            }
+                        }
+                        transformed.messages = validatedMessages;
                         
                         // Ensure messages array is not empty
                         if (!transformed.messages || (transformed.messages as any[]).length === 0) {
@@ -475,6 +546,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             item: {
                                 type: 'message',
                                 id: outputItemId,
+                                status: 'completed',
                                 role: 'assistant',
                                 content: [{ type: 'output_text', text: fullContent }],
                             },
@@ -485,6 +557,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         output.push({
                             type: 'message',
                             id: outputItemId,
+                            status: 'completed',
                             role: 'assistant',
                             content: [{ type: 'output_text', text: fullContent }],
                         });
@@ -494,6 +567,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             const callItem = {
                                 type: 'function_call',
                                 id: item.itemId,
+                                status: 'completed',
                                 call_id: callId,
                                 name: item.name || 'tool',
                                 arguments: item.arguments || '',
@@ -562,7 +636,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     const added = {
                         type: 'response.output_item.added',
                         output_index: 0,
-                        item: { type: 'message', id: outputItemId, role: 'assistant', content: [] },
+                        item: { type: 'message', id: outputItemId, status: 'in_progress', role: 'assistant', content: [] },
                     };
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(added)}\n\n`));
                     sentOutputItemAdded = true;
@@ -620,6 +694,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 item: {
                                     type: 'function_call',
                                     id: tracked.itemId,
+                                    status: 'in_progress',
                                     call_id: callId,
                                     name: tracked.name || toolCall.function?.name || 'tool',
                                     arguments: '',
@@ -699,6 +774,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 output.push({
                     type: 'message',
                     id: outputItemId,
+                    status: 'completed',
                     role: 'assistant',
                     content: [{
                         type: 'output_text',
@@ -713,6 +789,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     output.push({
                         type: 'function_call',
                         id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                        status: 'completed',
                         call_id: toolCall.id,
                         name: toolCall.function?.name,
                         arguments: toolCall.function?.arguments || '{}',
@@ -725,6 +802,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 output.push({
                     type: 'message',
                     id: outputItemId,
+                    status: 'completed',
                     role: 'assistant',
                     content: [{ type: 'output_text', text: '' }],
                 });
