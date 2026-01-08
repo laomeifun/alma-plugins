@@ -125,14 +125,105 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 rewrittenUrl = url.replace('/completions', '/chat/completions');
             }
 
-            // Determine if streaming based on request body
+            // Transform request body from OpenAI Responses API format to Chat Completions format
+            let transformedBody = init?.body;
             let isStreaming = false;
+            
             if (init?.body && typeof init.body === 'string') {
                 try {
-                    const bodyJson = JSON.parse(init.body);
-                    isStreaming = bodyJson.stream === true;
+                    const parsed = JSON.parse(init.body);
+                    isStreaming = parsed.stream === true;
+                    
+                    // Transform from Responses API format to Chat Completions format
+                    const transformed: Record<string, unknown> = {
+                        model: parsed.model,
+                        stream: isStreaming,
+                    };
+                    
+                    // Convert 'input' array to 'messages' array
+                    if (Array.isArray(parsed.input)) {
+                        transformed.messages = parsed.input
+                            .filter((item: any) => {
+                                // Filter out unsupported types
+                                if (item.type === 'item_reference') return false;
+                                return true;
+                            })
+                            .map((item: any) => {
+                                // Convert to Chat Completions message format
+                                if (item.type === 'message') {
+                                    const role = item.role === 'developer' ? 'system' : item.role;
+                                    let content = '';
+                                    
+                                    if (typeof item.content === 'string') {
+                                        content = item.content;
+                                    } else if (Array.isArray(item.content)) {
+                                        // Extract text from content parts
+                                        content = item.content
+                                            .filter((p: any) => p.type === 'input_text' || p.type === 'output_text' || p.type === 'text')
+                                            .map((p: any) => p.text || '')
+                                            .join('');
+                                    }
+                                    
+                                    return { role, content };
+                                }
+                                
+                                // Handle function_call_output -> tool message
+                                if (item.type === 'function_call_output') {
+                                    return {
+                                        role: 'tool',
+                                        content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output),
+                                        tool_call_id: item.call_id,
+                                    };
+                                }
+                                
+                                // Handle function_call -> assistant with tool_calls
+                                if (item.type === 'function_call') {
+                                    return {
+                                        role: 'assistant',
+                                        content: null,
+                                        tool_calls: [{
+                                            id: item.call_id || item.id,
+                                            type: 'function',
+                                            function: {
+                                                name: item.name,
+                                                arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments),
+                                            },
+                                        }],
+                                    };
+                                }
+                                
+                                // Default: try to extract as message
+                                return {
+                                    role: item.role || 'user',
+                                    content: item.content || item.text || '',
+                                };
+                            })
+                            .filter((msg: any) => msg.content !== '' || msg.tool_calls);
+                    } else if (Array.isArray(parsed.messages)) {
+                        // Already in messages format
+                        transformed.messages = parsed.messages;
+                    }
+                    
+                    // Copy other supported parameters
+                    if (parsed.temperature !== undefined) transformed.temperature = parsed.temperature;
+                    if (parsed.top_p !== undefined) transformed.top_p = parsed.top_p;
+                    if (parsed.max_tokens !== undefined) transformed.max_tokens = parsed.max_tokens;
+                    if (parsed.max_output_tokens !== undefined) transformed.max_tokens = parsed.max_output_tokens;
+                    if (parsed.stop !== undefined) transformed.stop = parsed.stop;
+                    
+                    // Handle tools
+                    if (Array.isArray(parsed.tools) && parsed.tools.length > 0) {
+                        transformed.tools = parsed.tools;
+                    }
+                    
+                    // Add stream_options for usage tracking
+                    if (isStreaming) {
+                        transformed.stream_options = { include_usage: true };
+                    }
+                    
+                    transformedBody = JSON.stringify(transformed);
                 } catch {
-                    // Ignore parse errors
+                    // Keep original body if parsing fails
                 }
             }
 
@@ -154,6 +245,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 return globalThis.fetch(rewrittenUrl, {
                     ...init,
                     headers,
+                    body: transformedBody,
                 });
             };
 
@@ -223,10 +315,202 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             if (!response.ok) {
                 const errorText = await response.clone().text();
                 logger.warn(`Qwen API response ${response.status}: ${errorText.slice(0, 500)}`);
+                return response;
             }
 
-            return response;
+            // Transform response from Chat Completions format to Responses API format
+            if (isStreaming) {
+                // Transform streaming response
+                return transformStreamingResponse(response);
+            } else {
+                // Transform non-streaming response
+                return await transformNonStreamingResponse(response);
+            }
         };
+    };
+
+    /**
+     * Transform streaming response from Chat Completions to Responses API format
+     */
+    const transformStreamingResponse = (response: Response): Response => {
+        if (!response.body) {
+            return response;
+        }
+
+        const reader = response.body.getReader();
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+
+        let responseId = `resp_${Date.now()}`;
+        let outputItemId = `msg_${Date.now()}`;
+        let sentCreated = false;
+        let sentOutputItemAdded = false;
+        let fullContent = '';
+
+        const stream = new ReadableStream({
+            async pull(controller) {
+                const { done, value } = await reader.read();
+                
+                if (done) {
+                    // Send completion events
+                    const doneEvent = {
+                        type: 'response.output_text.done',
+                        item_id: outputItemId,
+                        output_index: 0,
+                        content_index: 0,
+                        text: fullContent,
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneEvent)}\n\n`));
+
+                    const outputDone = {
+                        type: 'response.output_item.done',
+                        output_index: 0,
+                        item: {
+                            type: 'message',
+                            id: outputItemId,
+                            role: 'assistant',
+                            content: [{ type: 'output_text', text: fullContent }],
+                        },
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
+
+                    const completed = {
+                        type: 'response.completed',
+                        response: {
+                            id: responseId,
+                            status: 'completed',
+                            output: [{
+                                type: 'message',
+                                id: outputItemId,
+                                role: 'assistant',
+                                content: [{ type: 'output_text', text: fullContent }],
+                            }],
+                        },
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
+                    controller.close();
+                    return;
+                }
+
+                const text = decoder.decode(value, { stream: true });
+                const lines = text.split('\n');
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const chunk = JSON.parse(data);
+                        const delta = chunk.choices?.[0]?.delta;
+                        
+                        if (!delta) continue;
+
+                        // Send initial events
+                        if (!sentCreated) {
+                            const created = {
+                                type: 'response.created',
+                                response: { id: responseId, status: 'in_progress', output: [] },
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(created)}\n\n`));
+                            sentCreated = true;
+                        }
+
+                        if (!sentOutputItemAdded && (delta.content || delta.role)) {
+                            const added = {
+                                type: 'response.output_item.added',
+                                output_index: 0,
+                                item: { type: 'message', id: outputItemId, role: 'assistant', content: [] },
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(added)}\n\n`));
+                            sentOutputItemAdded = true;
+                        }
+
+                        // Send content delta
+                        if (delta.content) {
+                            fullContent += delta.content;
+                            const deltaEvent = {
+                                type: 'response.output_text.delta',
+                                item_id: outputItemId,
+                                output_index: 0,
+                                content_index: 0,
+                                delta: delta.content,
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(deltaEvent)}\n\n`));
+                        }
+                    } catch {
+                        // Skip malformed JSON
+                    }
+                }
+            },
+        });
+
+        return new Response(stream, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers({
+                'content-type': 'text/event-stream',
+                'cache-control': 'no-cache',
+            }),
+        });
+    };
+
+    /**
+     * Transform non-streaming response from Chat Completions to Responses API format
+     */
+    const transformNonStreamingResponse = async (response: Response): Promise<Response> => {
+        const text = await response.text();
+        
+        try {
+            const data = JSON.parse(text);
+            const message = data.choices?.[0]?.message;
+            
+            if (!message) {
+                return new Response(text, {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: response.headers,
+                });
+            }
+
+            const responseId = `resp_${data.id || Date.now()}`;
+            const outputItemId = `msg_${Date.now()}`;
+
+            const transformed = {
+                id: responseId,
+                object: 'response',
+                created_at: data.created || Math.floor(Date.now() / 1000),
+                status: 'completed',
+                output: [{
+                    type: 'message',
+                    id: outputItemId,
+                    role: 'assistant',
+                    content: [{
+                        type: 'output_text',
+                        text: message.content || '',
+                    }],
+                }],
+                usage: data.usage ? {
+                    input_tokens: data.usage.prompt_tokens,
+                    output_tokens: data.usage.completion_tokens,
+                    total_tokens: data.usage.total_tokens,
+                } : undefined,
+            };
+
+            return new Response(JSON.stringify(transformed), {
+                status: response.status,
+                statusText: response.statusText,
+                headers: new Headers({
+                    'content-type': 'application/json',
+                }),
+            });
+        } catch {
+            return new Response(text, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+            });
+        }
     };
 
     // =========================================================================
@@ -238,7 +522,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         name: 'Qwen (Alibaba)',
         description: 'Access Qwen AI models via your Qwen account',
         authType: 'oauth',
-        sdkType: 'openai', // Use OpenAI-compatible SDK
+        // Note: Not specifying sdkType - Qwen uses standard OpenAI Chat Completions format
+        // which is different from the new OpenAI Responses API format
 
         async initialize() {
             logger.info('Qwen provider initialized');
