@@ -172,6 +172,14 @@ export class TokenStore {
     }
 
     /**
+     * Force refresh the access token (even if not expired)
+     * Used when receiving 401 Unauthorized responses
+     */
+    async forceRefreshToken(): Promise<void> {
+        await this.refreshToken();
+    }
+
+    /**
      * Clear all tokens (logout)
      */
     async clearTokens(): Promise<void> {

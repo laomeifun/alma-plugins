@@ -73,6 +73,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
      * 1. Gets valid access token (refreshing if needed)
      * 2. Adds authorization header
      * 3. Handles rate limiting and errors
+     * 4. Retries on 401 with token refresh
      */
     const createQwenFetch = (): typeof globalThis.fetch => {
         return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -92,6 +93,19 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 return globalThis.fetch(input, init);
             }
 
+            // Helper function to make request with token
+            const makeRequest = async (token: string): Promise<Response> => {
+                const headers = new Headers(init?.headers);
+                headers.set('Authorization', `Bearer ${token}`);
+                headers.set('Content-Type', 'application/json');
+                headers.set('Accept', 'application/json');
+
+                return globalThis.fetch(url, {
+                    ...init,
+                    headers,
+                });
+            };
+
             // Get valid access token
             let accessToken: string;
             try {
@@ -100,19 +114,34 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 throw new Error(`Authentication required: ${error instanceof Error ? error.message : 'Unknown error'}`);
             }
 
-            // Add authorization header
-            const headers = new Headers(init?.headers);
-            headers.set('Authorization', `Bearer ${accessToken}`);
-            headers.set('Content-Type', 'application/json');
-            headers.set('Accept', 'application/json');
-
             logger.debug(`Making request to ${url}`);
 
             // Make the request
-            const response = await globalThis.fetch(url, {
-                ...init,
-                headers,
-            });
+            let response = await makeRequest(accessToken);
+
+            // Handle unauthorized - try to refresh token and retry once
+            if (response.status === HTTP_STATUS.UNAUTHORIZED) {
+                logger.warn('Unauthorized response, attempting token refresh...');
+                
+                try {
+                    // Force token refresh
+                    await tokenStore.forceRefreshToken();
+                    accessToken = await tokenStore.getValidAccessToken();
+                    
+                    // Retry the request with new token
+                    logger.info('Token refreshed, retrying request...');
+                    response = await makeRequest(accessToken);
+                    
+                    // If still unauthorized after refresh, the refresh token is also invalid
+                    if (response.status === HTTP_STATUS.UNAUTHORIZED) {
+                        logger.error('Still unauthorized after token refresh. Please login again.');
+                        ui.showError('Session expired. Please login to Qwen again.');
+                    }
+                } catch (refreshError) {
+                    logger.error('Token refresh failed:', refreshError);
+                    ui.showError('Session expired. Please login to Qwen again.');
+                }
+            }
 
             // Handle rate limiting
             if (response.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
@@ -126,12 +155,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     statusText: 'Too Many Requests',
                     headers,
                 });
-            }
-
-            // Handle unauthorized - token may be invalid
-            if (response.status === HTTP_STATUS.UNAUTHORIZED) {
-                logger.warn('Unauthorized response, token may be invalid');
-                // Could trigger re-authentication here
             }
 
             // Handle server errors
