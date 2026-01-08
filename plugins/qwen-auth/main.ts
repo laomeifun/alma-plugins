@@ -16,6 +16,7 @@ import { TokenStore } from './lib/token-store';
 import { initiateDeviceFlow, pollForToken } from './lib/auth';
 import { QWEN_MODELS, getBaseModel } from './lib/models';
 import { logDebug, logInfo, logError, logWarn, getLogFilePath } from './lib/file-logger';
+import { addAlmaBridgeMessage } from './lib/alma-bridge';
 
 // ============================================================================
 // Constants
@@ -277,6 +278,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     if (Array.isArray(parsed.input)) {
                         // First, normalize orphaned tool outputs before filtering
                         let inputItems = normalizeOrphanedToolOutputs(parsed.input);
+                        const hasTools = Array.isArray(parsed.tools) && parsed.tools.length > 0;
+                        inputItems = addAlmaBridgeMessage(inputItems, hasTools) || inputItems;
                         
                         // Expand item_references: for each function_call_output, ensure there's a preceding
                         // assistant message with tool_calls. If the function_call is referenced via item_reference,
