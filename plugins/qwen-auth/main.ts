@@ -155,6 +155,61 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             return content;
         };
 
+        /**
+         * Convert Responses-API style SSE stream to a single JSON response.
+         * This is used when the caller requested non-streaming, but we force
+         * streaming to Qwen for reliable tool calling.
+         */
+        const convertResponsesSseToJson = async (response: Response): Promise<Response> => {
+            if (!response.body) {
+                throw new Error('Response has no body');
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullText = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                fullText += decoder.decode(value, { stream: true });
+            }
+
+            const lines = fullText.split('\n');
+            let finalResponse: unknown = null;
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const data = JSON.parse(line.substring(6));
+                    if (data?.type === 'response.done' || data?.type === 'response.completed') {
+                        finalResponse = data.response;
+                        break;
+                    }
+                } catch {
+                    // Skip malformed JSON
+                }
+            }
+
+            if (!finalResponse) {
+                logWarn('Could not find final response in Responses SSE stream');
+                return new Response(fullText, {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: response.headers,
+                });
+            }
+
+            const headers = new Headers(response.headers);
+            headers.set('content-type', 'application/json; charset=utf-8');
+
+            return new Response(JSON.stringify(finalResponse), {
+                status: response.status,
+                statusText: response.statusText,
+                headers,
+            });
+        };
+
         const mapToolChoice = (choice: any): any => {
             if (choice == null) return choice;
             if (typeof choice === 'string') return choice;
@@ -202,7 +257,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
             // Transform request body from OpenAI Responses API format to Chat Completions format
             let transformedBody = init?.body;
-            let isStreaming = false;
+            let requestedStreaming = false;
+            let qwenStreaming = false;
+            let forcedStreamingForTools = false;
             
             // Tool name hints for mapping empty tool_call names from Qwen
             let toolNameHints: {
@@ -232,12 +289,20 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     // First, recursively convert all input_text/output_text to text
                     parsed = convertContentTypes(parsed);
                     
-                    isStreaming = parsed.stream === true;
+                    requestedStreaming = parsed.stream === true;
+                    const hasTools = Array.isArray(parsed.tools) && parsed.tools.length > 0;
+
+                    // Qwen tool calling can be unreliable in non-streaming mode; force streaming when tools are present.
+                    forcedStreamingForTools = !requestedStreaming && hasTools;
+                    qwenStreaming = requestedStreaming || forcedStreamingForTools;
+                    if (forcedStreamingForTools) {
+                        logInfo('Forcing Qwen streaming mode for tool-enabled non-streaming request');
+                    }
                     
                     // Transform from Responses API format to Chat Completions format
                     const transformed: Record<string, unknown> = {
                         model: parsed.model,
-                        stream: isStreaming,
+                        stream: qwenStreaming,
                     };
                     
                     // Helper function to handle orphaned tool outputs
@@ -571,7 +636,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     }
                     
                     // Add stream_options for usage tracking
-                    if (isStreaming) {
+                    if (qwenStreaming) {
                         transformed.stream_options = { include_usage: true };
                     }
                     
@@ -590,7 +655,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 headers.set('X-Goog-Api-Client', QWEN_HEADERS.X_GOOG_API_CLIENT);
                 headers.set('Client-Metadata', QWEN_HEADERS.CLIENT_METADATA);
                 
-                if (isStreaming) {
+                if (qwenStreaming) {
                     headers.set('Accept', 'text/event-stream');
                 } else {
                     headers.set('Accept', 'application/json');
@@ -674,11 +739,19 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             }
 
             // Transform response from Chat Completions format to Responses API format
-            if (isStreaming) {
+            if (qwenStreaming) {
                 // Transform streaming response
                 logInfo(`Transforming streaming response to Responses API format, URL: ${rewrittenUrl}`);
                 logger.info('[qwen-auth] Transforming streaming response to Responses API format');
-                return transformStreamingResponse(response, toolNameHints);
+                const transformedStream = transformStreamingResponse(response, toolNameHints);
+
+                // If caller requested non-streaming, convert the Responses SSE stream to plain JSON.
+                if (!requestedStreaming) {
+                    logInfo(`Converting Responses SSE stream to JSON (forced streaming), URL: ${rewrittenUrl}`);
+                    return await convertResponsesSseToJson(transformedStream);
+                }
+
+                return transformedStream;
             } else {
                 // Transform non-streaming response
                 logInfo(`Transforming non-streaming response to Responses API format, URL: ${rewrittenUrl}`);
