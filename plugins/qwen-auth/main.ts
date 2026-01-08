@@ -181,6 +181,21 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 try {
                     let parsed = JSON.parse(init.body);
                     
+                    // Debug: log the input to help diagnose issues
+                    if (Array.isArray(parsed.input)) {
+                        const inputTypes = parsed.input.map((item: any) => item.type);
+                        logger.debug(`[qwen-auth] Request input types: ${JSON.stringify(inputTypes)}`);
+                        
+                        // Log function_call_output items for debugging
+                        const toolOutputs = parsed.input.filter((item: any) => item.type === 'function_call_output');
+                        if (toolOutputs.length > 0) {
+                            logger.debug(`[qwen-auth] Found ${toolOutputs.length} function_call_output items`);
+                            for (const output of toolOutputs) {
+                                logger.debug(`[qwen-auth] Tool output call_id: ${output.call_id}, name: ${output.name}`);
+                            }
+                        }
+                    }
+                    
                     // First, recursively convert all input_text/output_text to text
                     parsed = convertContentTypes(parsed);
                     
@@ -386,6 +401,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         // Qwen requires last message role to be user/tool/function
                         // If last message is assistant, we need to handle this
                         const messages = transformed.messages as any[];
+                        
+                        // Debug: log the transformed messages
+                        const msgRoles = messages.map((m: any) => m.role + (m.tool_calls ? `[${m.tool_calls.length} tool_calls]` : '') + (m.tool_call_id ? `[tool_call_id=${m.tool_call_id}]` : ''));
+                        logger.debug(`[qwen-auth] Transformed message roles: ${JSON.stringify(msgRoles)}`);
+                        
                         if (messages.length > 0) {
                             const lastMsg = messages[messages.length - 1];
                             if (lastMsg.role === 'assistant' && !lastMsg.tool_calls) {
