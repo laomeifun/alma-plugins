@@ -22,6 +22,22 @@ export type RateLimitReason = 'quota_exhausted' | 'rate_limit_exceeded' | 'serve
 // Subscription tier (matching Antigravity-Manager)
 export type SubscriptionTier = 'ULTRA' | 'PRO' | 'FREE' | 'UNKNOWN';
 
+// Scheduling mode (matching Antigravity-Manager's sticky_config.rs)
+export type SchedulingMode = 'CacheFirst' | 'Balance' | 'PerformanceFirst';
+
+// Sticky session config (matching Antigravity-Manager)
+export interface StickySessionConfig {
+    /** Current scheduling mode */
+    mode: SchedulingMode;
+    /** Max wait time in seconds for CacheFirst mode */
+    maxWaitSeconds: number;
+}
+
+export const DEFAULT_STICKY_CONFIG: StickySessionConfig = {
+    mode: 'Balance',
+    maxWaitSeconds: 60,
+};
+
 // Default cooldown times in ms (matching Antigravity-Manager)
 export const RATE_LIMIT_DEFAULTS = {
     quota_exhausted: 60 * 60 * 1000,     // 1 hour for quota exhaustion
@@ -226,10 +242,35 @@ export class AccountManager {
     /** Last used account info for 60s global lock (non-image requests) */
     private lastUsedAccount: { accountIndex: number; timestamp: number } | null = null;
 
+    /** Scheduling mode config (matching Antigravity-Manager's sticky_config) */
+    private stickyConfig: StickySessionConfig = { ...DEFAULT_STICKY_CONFIG };
+
     constructor(
         logger?: { debug: (msg: string, ...args: unknown[]) => void; info: (msg: string, ...args: unknown[]) => void; warn: (msg: string, ...args: unknown[]) => void }
     ) {
         this.logger = logger;
+    }
+
+    // =========================================================================
+    // Scheduling Config
+    // =========================================================================
+
+    getStickyConfig(): StickySessionConfig {
+        return { ...this.stickyConfig };
+    }
+
+    setStickyConfig(config: Partial<StickySessionConfig>): void {
+        this.stickyConfig = { ...this.stickyConfig, ...config };
+        this.logger?.info(`Scheduling mode set to: ${this.stickyConfig.mode}`);
+    }
+
+    getSchedulingMode(): SchedulingMode {
+        return this.stickyConfig.mode;
+    }
+
+    setSchedulingMode(mode: SchedulingMode): void {
+        this.stickyConfig.mode = mode;
+        this.logger?.info(`Scheduling mode set to: ${mode}`);
     }
 
     // =========================================================================

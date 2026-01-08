@@ -16,6 +16,7 @@ import {
     type ModelFamily,
     type HeaderStyle,
     type AccountStorageData,
+    type SchedulingMode,
 } from './account-manager';
 import { fetchQuota, type QuotaData } from './quota';
 
@@ -173,22 +174,28 @@ export class TokenStore {
         let lastError: string | undefined;
         let needUpdateLastUsed: { accountIndex: number; clear: boolean } | null = null;
 
+        // Get scheduling mode
+        const schedulingMode = this.accountManager.getSchedulingMode();
+
         // Retry loop (matches Antigravity-Manager's for attempt in 0..total)
         for (let attempt = 0; attempt < total; attempt++) {
             const rotate = forceRotate || attempt > 0;
             let targetAccount: ManagedAccount | null = null;
 
-            // Mode A: Sticky session handling
-            if (!rotate && sessionId) {
+            // Mode A: Sticky session handling (skip for PerformanceFirst mode)
+            // Matches Antigravity-Manager: if !rotate && session_id.is_some() && scheduling.mode != SchedulingMode::PerformanceFirst
+            if (!rotate && sessionId && schedulingMode !== 'PerformanceFirst') {
                 const boundAccount = this.accountManager.getAccountForSession(sessionId);
                 if (boundAccount) {
                     const accountId = boundAccount.email || String(boundAccount.index);
                     const resetSec = this.accountManager.getRemainingWait(accountId);
 
                     if (resetSec > 0) {
-                        // Account is rate-limited, unbind and switch
+                        // 【修复 Issue #284】立即解绑并切换账号，不再阻塞等待
+                        // 原因：阻塞等待会导致并发请求时客户端 socket 超时 (UND_ERR_SOCKET)
+                        // Account is rate-limited: unbind and switch immediately (all modes)
                         this.logger.warn(
-                            `Session ${sessionId.slice(0, 8)}... bound account ${accountId} is rate-limited (${resetSec}s remaining). Unbinding.`
+                            `Session ${sessionId.slice(0, 8)}... bound account ${accountId} is rate-limited (${resetSec}s remaining). Unbinding and switching.`
                         );
                         this.accountManager.unbindSession(sessionId);
                     } else if (!attempted.has(accountId)) {
@@ -199,7 +206,9 @@ export class TokenStore {
                 }
             }
 
-            // Mode B: 60s global lock (skip for image requests)
+            // Mode B: 60s global lock (skip for image requests only)
+            // Matches Antigravity-Manager: target_token.is_none() && !rotate && quota_group != "image_gen"
+            // Note: PerformanceFirst does NOT skip Mode B, only skips session binding
             if (!targetAccount && !rotate && !isImageRequest) {
                 // Check if we can reuse last used account within 60s window
                 if (lastUsedInfo) {
@@ -222,8 +231,9 @@ export class TokenStore {
                     if (targetAccount) {
                         needUpdateLastUsed = { accountIndex: targetAccount.index, clear: false };
 
-                        // Bind session if provided
-                        if (sessionId) {
+                        // Bind session if provided (skip for PerformanceFirst mode)
+                        // Matches Antigravity-Manager: if scheduling.mode != SchedulingMode::PerformanceFirst
+                        if (sessionId && schedulingMode !== 'PerformanceFirst') {
                             this.accountManager.bindSession(sessionId, targetAccount.index);
                             this.logger.debug(
                                 `Sticky Session: Bound new account ${targetAccount.email || targetAccount.index} to session ${sessionId.slice(0, 8)}...`

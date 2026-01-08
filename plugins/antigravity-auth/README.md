@@ -133,13 +133,17 @@ MIT License
 
 ## Acknowledgments
 
-This plugin is based on and inspired by [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) by [@NoeFabris](https://github.com/NoeFabris).
+This plugin is based on and inspired by:
 
-Special thanks to the original author for:
+- [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) by [@NoeFabris](https://github.com/NoeFabris)
+- [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager) by [@lbjlaq](https://github.com/lbjlaq)
+
+Special thanks to the original authors for:
 - The Google OAuth authentication flow implementation
 - Antigravity API integration patterns
 - Multi-endpoint fallback architecture
 - Thinking block signature management
+- Multi-account rotation and scheduling logic (SchedulingMode, session stickiness, tier-based priority)
 - The overall architecture and approach
 
 Without their pioneering work, this plugin would not have been possible.
