@@ -564,13 +564,26 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
                         // Finalize any function_call items
                         for (const [callId, item] of toolCallItems.entries()) {
+                            const finalArgs = item.arguments || '{}';
+                            
+                            // First, emit function_call_arguments.done event
+                            const argsDone = {
+                                type: 'response.function_call_arguments.done',
+                                item_id: item.itemId,
+                                output_index: item.outputIndex,
+                                call_id: callId,
+                                arguments: finalArgs,
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(argsDone)}\n\n`));
+                            
+                            // Then emit output_item.done event
                             const callItem = {
                                 type: 'function_call',
                                 id: item.itemId,
                                 status: 'completed',
                                 call_id: callId,
                                 name: item.name || 'tool',
-                                arguments: item.arguments || '',
+                                arguments: finalArgs,
                             };
                             const callDone = {
                                 type: 'response.output_item.done',
