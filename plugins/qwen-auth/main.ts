@@ -757,6 +757,7 @@ Waiting for authorization...
                     streaming: true,
                     reasoning: model.reasoning ?? false,
                     vision: model.vision ?? false,
+                    functionCalling: model.functionCalling ?? true, // All Qwen models support function calling
                 },
             }));
         },

@@ -23,6 +23,7 @@ export const QWEN_MODELS: QwenModelInfo[] = [
         baseModel: 'qwen3-coder-plus',
         contextWindow: 32768,
         maxOutputTokens: 8192,
+        functionCalling: true,
     },
     {
         id: 'qwen3-coder-flash',
@@ -31,6 +32,7 @@ export const QWEN_MODELS: QwenModelInfo[] = [
         baseModel: 'qwen3-coder-flash',
         contextWindow: 8192,
         maxOutputTokens: 2048,
+        functionCalling: true,
     },
 
     // Qwen3 Vision Model
@@ -42,6 +44,7 @@ export const QWEN_MODELS: QwenModelInfo[] = [
         contextWindow: 32768,
         maxOutputTokens: 2048,
         vision: true,
+        functionCalling: true,
     },
 ];
 

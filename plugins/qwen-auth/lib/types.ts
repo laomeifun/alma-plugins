@@ -88,6 +88,7 @@ export interface QwenModelInfo {
     maxOutputTokens?: number;
     reasoning?: boolean; // Model supports reasoning/thinking
     vision?: boolean; // Model supports vision
+    functionCalling?: boolean; // Model supports function/tool calling
 }
 
 // ============================================================================
