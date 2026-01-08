@@ -613,10 +613,435 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 return response;
             }
 
-            // Since useResponsesAPI is false, Alma expects Chat Completions format
-            // No need to transform the response - return it directly
-            return response;
+            // Transform response from Chat Completions format to Responses API format
+            if (isStreaming) {
+                // Transform streaming response
+                return transformStreamingResponse(response);
+            } else {
+                // Transform non-streaming response
+                return await transformNonStreamingResponse(response);
+            }
         };
+    };
+
+    /**
+     * Transform streaming response from Chat Completions to Responses API format
+     */
+    const transformStreamingResponse = (response: Response): Response => {
+        if (!response.body) {
+            return response;
+        }
+
+        const reader = response.body.getReader();
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+
+        const responseId = `resp_${Date.now()}`;
+        const outputItemId = `msg_${Date.now()}`;
+        let sentCreated = false;
+        let sentOutputItemAdded = false;
+        let sentContentPartAdded = false;
+        let sentMessageDone = false; // Track if we've closed the message item
+        let fullContent = '';
+        let buffer = ''; // Buffer for incomplete SSE lines
+
+        // Track tool calls so we can emit proper Responses-API function_call output items
+        // Key: call_id, Value: { itemId, name, arguments, outputIndex }
+        const toolCallItems = new Map<string, { itemId: string; name?: string; arguments: string; outputIndex: number }>();
+        // Map from tool_call index to call_id (for Qwen models that send index without id)
+        const toolCallIndices = new Map<number, string>();
+
+        const stream = new ReadableStream({
+            async pull(controller) {
+                try {
+                    const { done, value } = await reader.read();
+                    
+                    if (done) {
+                        // Process any remaining buffer
+                        if (buffer.trim()) {
+                            processLine(buffer, controller);
+                        }
+
+                        // Build output array (message + any function_call items)
+                        const output: any[] = [];
+
+                        // Close message item if not already done
+                        if (!sentMessageDone) {
+                            emitMessageDone(controller);
+                        }
+
+                        // Push message to output array first
+                        output.push({
+                            type: 'message',
+                            id: outputItemId,
+                            status: 'completed',
+                            role: 'assistant',
+                            content: [{ type: 'output_text', text: fullContent }],
+                        });
+
+                        // Finalize any function_call items
+                        for (const [callId, item] of toolCallItems.entries()) {
+                            const finalArgs = item.arguments || '{}';
+                            
+                            // First, emit function_call_arguments.done event
+                            const argsDone = {
+                                type: 'response.function_call_arguments.done',
+                                item_id: item.itemId,
+                                output_index: item.outputIndex,
+                                call_id: callId,
+                                arguments: finalArgs,
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(argsDone)}\n\n`));
+                            
+                            // Then emit output_item.done event
+                            const callItem = {
+                                type: 'function_call',
+                                id: item.itemId,
+                                status: 'completed',
+                                call_id: callId,
+                                name: item.name || 'tool',
+                                arguments: finalArgs,
+                            };
+                            const callDone = {
+                                type: 'response.output_item.done',
+                                output_index: item.outputIndex,
+                                item: callItem,
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(callDone)}\n\n`));
+                            output.push(callItem);
+                        }
+
+                        const completed = {
+                            type: 'response.completed',
+                            response: {
+                                id: responseId,
+                                status: 'completed',
+                                output,
+                            },
+                        };
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
+                        controller.close();
+                        return;
+                    }
+
+                    const text = decoder.decode(value, { stream: true });
+                    buffer += text;
+                    
+                    // Process complete lines
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || ''; // Keep incomplete line in buffer
+                    
+                    for (const line of lines) {
+                        processLine(line, controller);
+                    }
+                } catch (error) {
+                    controller.error(error);
+                }
+            },
+        });
+
+        // Helper function to emit message done events
+        function emitMessageDone(controller: ReadableStreamDefaultController) {
+            if (sentMessageDone) return;
+            
+            const doneEvent = {
+                type: 'response.output_text.done',
+                item_id: outputItemId,
+                output_index: 0,
+                content_index: 0,
+                text: fullContent,
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneEvent)}\n\n`));
+
+            const contentPartDone = {
+                type: 'response.content_part.done',
+                item_id: outputItemId,
+                output_index: 0,
+                content_index: 0,
+                part: { type: 'output_text', text: fullContent },
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(contentPartDone)}\n\n`));
+
+            const outputDone = {
+                type: 'response.output_item.done',
+                output_index: 0,
+                item: {
+                    type: 'message',
+                    id: outputItemId,
+                    status: 'completed',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: fullContent }],
+                },
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
+            
+            sentMessageDone = true;
+        }
+
+        function processLine(line: string, controller: ReadableStreamDefaultController) {
+            if (!line.startsWith('data: ')) return;
+            const data = line.slice(6).trim();
+            if (data === '[DONE]' || data === '') return;
+
+            try {
+                const chunk = JSON.parse(data);
+                
+                // Handle empty choices array (some models send this for usage info)
+                if (!chunk.choices || chunk.choices.length === 0) {
+                    // This might be a usage-only chunk, skip it
+                    return;
+                }
+                
+                const delta = chunk.choices?.[0]?.delta;
+                const finishReason = chunk.choices?.[0]?.finish_reason;
+                
+                if (!delta && !finishReason) return;
+
+                // Send initial events
+                if (!sentCreated) {
+                    const created = {
+                        type: 'response.created',
+                        response: { id: responseId, status: 'in_progress', output: [] },
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(created)}\n\n`));
+                    sentCreated = true;
+                }
+
+                if (!sentOutputItemAdded && delta && (delta.content || delta.role)) {
+                    const added = {
+                        type: 'response.output_item.added',
+                        output_index: 0,
+                        item: { type: 'message', id: outputItemId, status: 'in_progress', role: 'assistant', content: [] },
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(added)}\n\n`));
+                    sentOutputItemAdded = true;
+                }
+
+                // Send content delta
+                if (delta?.content) {
+                    // Emit content_part.added before first text delta
+                    if (!sentContentPartAdded) {
+                        const partAdded = {
+                            type: 'response.content_part.added',
+                            item_id: outputItemId,
+                            output_index: 0,
+                            content_index: 0,
+                            part: { type: 'output_text', text: '' },
+                        };
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(partAdded)}\n\n`));
+                        sentContentPartAdded = true;
+                    }
+                    
+                    fullContent += delta.content;
+                    const deltaEvent = {
+                        type: 'response.output_text.delta',
+                        item_id: outputItemId,
+                        output_index: 0,
+                        content_index: 0,
+                        delta: delta.content,
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(deltaEvent)}\n\n`));
+                }
+                
+                // Handle tool calls (emit function_call output items + argument deltas)
+                if (delta?.tool_calls) {
+                    // Before emitting any function events, close the message item first
+                    // This matches CLIProxyAPI's behavior where message is closed before tool_calls
+                    if (sentOutputItemAdded && !sentMessageDone) {
+                        emitMessageDone(controller);
+                    }
+                    
+                    logger.debug(`[qwen-auth] Received tool_calls in delta: ${JSON.stringify(delta.tool_calls)}`);
+                    for (const toolCall of delta.tool_calls) {
+                        // Qwen sometimes sends tool_calls with index but no id in subsequent chunks
+                        // We need to track the mapping between index and callId
+                        // FIX: Handle the case where id comes in a later chunk
+                        
+                        const index = toolCall.index ?? 0; // Default to 0 if no index
+                        let callId = toolCall.id;
+                        
+                        // Check if we already have a mapping for this index
+                        const existingCallId = toolCallIndices.get(index);
+                        
+                        if (callId && existingCallId && callId !== existingCallId) {
+                            // We have a real id now, but we already generated one
+                            // This shouldn't happen often, but if it does, use the existing one
+                            // to maintain consistency with already-emitted events
+                            logger.debug(`[qwen-auth] Ignoring new callId ${callId} for index ${index}, using existing ${existingCallId}`);
+                            callId = existingCallId;
+                        } else if (!callId && existingCallId) {
+                            // No id in this chunk, use the existing mapping
+                            callId = existingCallId;
+                        } else if (!callId && !existingCallId) {
+                            // No id and no existing mapping - generate one
+                            callId = `call_${Date.now()}_${index}`;
+                            logger.debug(`[qwen-auth] Generated callId for tool_call index ${index}: ${callId}`);
+                        }
+                        
+                        // Save/update the mapping between index and callId
+                        if (index !== undefined && callId) {
+                            toolCallIndices.set(index, callId);
+                        }
+
+                        let tracked = toolCallItems.get(callId);
+                        if (!tracked) {
+                            const outputIndex = 1 + toolCallItems.size; // after message
+                            tracked = {
+                                itemId: `fc_${callId}`, // Use fc_ prefix like CLIProxyAPI
+                                name: toolCall.function?.name,
+                                arguments: '',
+                                outputIndex,
+                            };
+                            toolCallItems.set(callId, tracked);
+
+                            // Announce a function_call output item
+                            const addedCall = {
+                                type: 'response.output_item.added',
+                                output_index: outputIndex,
+                                item: {
+                                    type: 'function_call',
+                                    id: tracked.itemId,
+                                    status: 'in_progress',
+                                    call_id: callId,
+                                    name: tracked.name || toolCall.function?.name || 'tool',
+                                    arguments: '',
+                                },
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(addedCall)}\n\n`));
+                        }
+
+                        if (toolCall.function?.name && !tracked.name) {
+                            tracked.name = toolCall.function.name;
+                        }
+
+                        if (toolCall.function?.arguments) {
+                            tracked.arguments += toolCall.function.arguments;
+                            const funcDelta = {
+                                type: 'response.function_call_arguments.delta',
+                                item_id: tracked.itemId,
+                                output_index: tracked.outputIndex,
+                                call_id: callId,
+                                delta: toolCall.function.arguments,
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(funcDelta)}\n\n`));
+                        }
+                    }
+                }
+                
+                // Handle finish_reason
+                if (finishReason) {
+                    // If finish_reason is 'tool_calls' or 'function_call', we might need to ensure
+                    // all tool calls are properly closed/finalized if we were tracking state,
+                    // but in this stateless stream transform, we just rely on the final 'done' event.
+                    // However, some clients might expect a specific event or just the stream end.
+                    // For now, we do nothing special as the stream end (done: true) handles completion.
+                }
+            } catch {
+                // Skip malformed JSON
+            }
+        }
+
+        return new Response(stream, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers({
+                'content-type': 'text/event-stream',
+                'cache-control': 'no-cache',
+            }),
+        });
+    };
+
+    /**
+     * Transform non-streaming response from Chat Completions to Responses API format
+     */
+    const transformNonStreamingResponse = async (response: Response): Promise<Response> => {
+        const text = await response.text();
+        
+        try {
+            const data = JSON.parse(text);
+            const choice = data.choices?.[0];
+            const message = choice?.message;
+            
+            if (!message) {
+                return new Response(text, {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: response.headers,
+                });
+            }
+
+            const responseId = `resp_${data.id || Date.now()}`;
+            const outputItemId = `msg_${Date.now()}`;
+
+            // Build output array
+            const output: any[] = [];
+            
+            // Add message content
+            if (message.content) {
+                output.push({
+                    type: 'message',
+                    id: outputItemId,
+                    status: 'completed',
+                    role: 'assistant',
+                    content: [{
+                        type: 'output_text',
+                        text: message.content,
+                    }],
+                });
+            }
+            
+            // Add tool calls if present
+            if (message.tool_calls && message.tool_calls.length > 0) {
+                for (const toolCall of message.tool_calls) {
+                    output.push({
+                        type: 'function_call',
+                        id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                        status: 'completed',
+                        call_id: toolCall.id,
+                        name: toolCall.function?.name,
+                        arguments: toolCall.function?.arguments || '{}',
+                    });
+                }
+            }
+            
+            // If no output, add empty message
+            if (output.length === 0) {
+                output.push({
+                    type: 'message',
+                    id: outputItemId,
+                    status: 'completed',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: '' }],
+                });
+            }
+
+            const transformed = {
+                id: responseId,
+                object: 'response',
+                created_at: data.created || Math.floor(Date.now() / 1000),
+                status: 'completed',
+                output,
+                usage: data.usage ? {
+                    input_tokens: data.usage.prompt_tokens,
+                    output_tokens: data.usage.completion_tokens,
+                    total_tokens: data.usage.total_tokens,
+                } : undefined,
+            };
+
+            return new Response(JSON.stringify(transformed), {
+                status: response.status,
+                statusText: response.statusText,
+                headers: new Headers({
+                    'content-type': 'application/json',
+                }),
+            });
+        } catch {
+            return new Response(text, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+            });
+        }
     };
 
     // =========================================================================
@@ -736,16 +1161,15 @@ Waiting for authorization...
          * Returns SDK configuration for AI SDK's createOpenAI().
          * Uses dummy API key since actual auth is handled in custom fetch.
          * 
-         * Note: useResponsesAPI is set to false because Qwen uses standard
-         * OpenAI Chat Completions format, not the new Responses API format.
-         * This avoids complex format conversions and improves stability.
+         * Note: useResponsesAPI is set to true because we transform Chat Completions
+         * responses to Responses API format in our custom fetch wrapper.
          */
         async getSDKConfig() {
             return {
                 apiKey: 'qwen-oauth', // Dummy key, actual auth in custom fetch
                 baseURL: getQwenBaseUrl(),
                 fetch: createQwenFetch(),
-                useResponsesAPI: false, // Use Chat Completions format directly
+                useResponsesAPI: true, // We transform responses to Responses API format
             };
         },
     });
