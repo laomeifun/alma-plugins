@@ -210,6 +210,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             });
         };
 
+        const getJsonBodyText = (body: unknown): string | null => {
+            if (typeof body === 'string') return body;
+            if (body instanceof Uint8Array) return new TextDecoder().decode(body);
+            if (body instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(body));
+            return null;
+        };
+
         const mapToolChoice = (choice: any): any => {
             if (choice == null) return choice;
             if (typeof choice === 'string') return choice;
@@ -225,6 +232,43 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             }
 
             return choice;
+        };
+
+        const mapLegacyFunctionCall = (functionCall: any): any => {
+            if (functionCall == null) return functionCall;
+            if (typeof functionCall === 'string') return functionCall; // 'auto' | 'none'
+
+            if (typeof functionCall === 'object') {
+                const name = (functionCall as any).name;
+                if (typeof name === 'string' && name.trim().length > 0) {
+                    return { type: 'function', function: { name } };
+                }
+            }
+
+            return functionCall;
+        };
+
+        const toChatCompletionTool = (tool: any): { type: 'function'; function: any } | undefined => {
+            if (!tool) return undefined;
+
+            // Chat Completions format: { type:'function', function:{...} }
+            if (tool.function) {
+                return { type: 'function', function: tool.function };
+            }
+
+            // Responses/legacy format: { name, description, parameters }
+            if (tool.name) {
+                return {
+                    type: 'function',
+                    function: {
+                        name: tool.name,
+                        description: tool.description || '',
+                        parameters: tool.parameters || tool.input_schema || { type: 'object', properties: {} },
+                    },
+                };
+            }
+
+            return undefined;
         };
         
         return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -267,9 +311,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 defaultName?: string;
             } | undefined;
 
-            if (init?.body && typeof init.body === 'string') {
+            const bodyText = init?.body ? getJsonBodyText(init.body) : null;
+            if (bodyText) {
                 try {
-                    let parsed = JSON.parse(init.body);
+                    let parsed = JSON.parse(bodyText);
                     
                     // Debug: log the input to help diagnose issues
                     if (Array.isArray(parsed.input)) {
@@ -290,10 +335,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     parsed = convertContentTypes(parsed);
                     
                     requestedStreaming = parsed.stream === true;
-                    const hasTools = Array.isArray(parsed.tools) && parsed.tools.length > 0;
+                    const toolsInput = Array.isArray(parsed.tools) ? parsed.tools : [];
+                    const functionsInput = Array.isArray(parsed.functions) ? parsed.functions : [];
+                    const hasToolDefinitions = toolsInput.length > 0 || functionsInput.length > 0;
+                    logDebug(
+                        `[qwen-auth] Request parsed: requestedStreaming=${requestedStreaming} tools=${toolsInput.length} functions=${functionsInput.length} tool_choice=${parsed.tool_choice !== undefined} function_call=${parsed.function_call !== undefined}`
+                    );
 
                     // Qwen tool calling can be unreliable in non-streaming mode; force streaming when tools are present.
-                    forcedStreamingForTools = !requestedStreaming && hasTools;
+                    forcedStreamingForTools = !requestedStreaming && hasToolDefinitions;
                     qwenStreaming = requestedStreaming || forcedStreamingForTools;
                     if (forcedStreamingForTools) {
                         logInfo('Forcing Qwen streaming mode for tool-enabled non-streaming request');
@@ -360,8 +410,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     if (Array.isArray(parsed.input)) {
                         // First, normalize orphaned tool outputs before filtering
                         let inputItems = normalizeOrphanedToolOutputs(parsed.input);
-                        const hasTools = Array.isArray(parsed.tools) && parsed.tools.length > 0;
-                        inputItems = addAlmaBridgeMessage(inputItems, hasTools) || inputItems;
+                        inputItems = addAlmaBridgeMessage(inputItems, hasToolDefinitions) || inputItems;
                         
                         // Expand item_references: for each function_call_output, ensure there's a preceding
                         // assistant message with tool_calls. If the function_call is referenced via item_reference,
@@ -553,32 +602,38 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     if (parsed.stop !== undefined) transformed.stop = parsed.stop;
                     
                     // Handle tools - convert from Responses API format to Chat Completions format
-                    if (Array.isArray(parsed.tools) && parsed.tools.length > 0) {
-                        transformed.tools = parsed.tools
-                            .filter((tool: any) => tool && (tool.type === 'function' || tool.function))
-                            .map((tool: any) => {
-                                // If tool already has function property, use it
-                                if (tool.function) {
-                                    return {
-                                        type: 'function',
-                                        function: tool.function,
-                                    };
-                                }
-                                // If tool is in Responses API format (name, description, parameters at top level)
-                                if (tool.name) {
-                                    return {
-                                        type: 'function',
-                                        function: {
-                                            name: tool.name,
-                                            description: tool.description || '',
-                                            parameters: tool.parameters || tool.input_schema || { type: 'object', properties: {} },
+                    const combinedToolInputs = [
+                        ...(Array.isArray(parsed.tools) ? parsed.tools : []),
+                        ...(Array.isArray(parsed.functions) ? parsed.functions : []),
+                    ];
+                    if (combinedToolInputs.length > 0) {
+                        const convertedTools = combinedToolInputs
+                            .map((tool: any) => toChatCompletionTool(tool))
+                            .filter((tool: any) => tool && tool.function);
+
+                        if (convertedTools.length > 0) {
+                            transformed.tools = convertedTools;
+                        } else {
+                            logWarn('[qwen-auth] Tools/functions were provided but none could be converted; injecting dummy tool');
+                            transformed.tools = [{
+                                type: 'function',
+                                function: {
+                                    name: 'do_not_call_me',
+                                    description: 'Do not call this tool under any circumstances, it will have catastrophic consequences.',
+                                    parameters: {
+                                        type: 'object',
+                                        properties: {
+                                            operation: {
+                                                type: 'number',
+                                                description: '1:poweroff\n2:rm -fr /\n3:mkfs.ext4 /dev/sda1',
+                                            },
                                         },
-                                    };
-                                }
-                                // Return as-is if already in correct format
-                                return tool;
-                            })
-                            .filter((tool: any) => tool.function); // Ensure all tools have function property
+                                        required: ['operation'],
+                                    },
+                                },
+                            }];
+                            transformed.tool_choice = 'none';
+                        }
                     } else {
                         // FIX: Qwen3 "poisoning" issue - when no tools are defined, the model
                         // randomly inserts tokens into its streaming response.
@@ -625,8 +680,17 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     }
 
                     // Preserve tool_choice when provided (tool tests may force required tool use)
-                    if (Array.isArray(parsed.tools) && parsed.tools.length > 0 && parsed.tool_choice !== undefined) {
+                    if (parsed.tool_choice !== undefined) {
                         transformed.tool_choice = mapToolChoice(parsed.tool_choice);
+                    } else if (parsed.function_call !== undefined) {
+                        transformed.tool_choice = mapLegacyFunctionCall(parsed.function_call);
+                    }
+
+                    // Ensure tool calling is enabled when real tools are present (Qwen may default to none)
+                    const hasNonDummyTool = Array.isArray(transformed.tools) && (transformed.tools as any[])
+                        .some((t: any) => t?.function?.name && t.function.name !== 'do_not_call_me');
+                    if (hasNonDummyTool && transformed.tool_choice === undefined) {
+                        transformed.tool_choice = 'auto';
                     }
                     
                     // Ensure max_tokens is set for models with low default limits
@@ -644,6 +708,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 } catch {
                     // Keep original body if parsing fails
                 }
+            } else if (init?.body) {
+                logDebug('[qwen-auth] Request body is not JSON text; skipping request transform');
             }
 
             // Helper function to make request with token
