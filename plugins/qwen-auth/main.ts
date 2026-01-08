@@ -186,6 +186,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             let transformedBody = init?.body;
             let isStreaming = false;
             
+            // Tool name hints for mapping empty tool_call names from Qwen
+            let toolNameHints: {
+                byIndex: Map<number, string>;
+                defaultName?: string;
+            } | undefined;
+
             if (init?.body && typeof init.body === 'string') {
                 try {
                     let parsed = JSON.parse(init.body);
@@ -513,6 +519,25 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         // Ensure the model doesn't actually call this tool
                         transformed.tool_choice = 'none';
                     }
+
+                    // Build tool name hints (exclude dummy tool)
+                    if (Array.isArray(transformed.tools)) {
+                        const names = (transformed.tools as any[])
+                            .map((tool: any) => tool?.function?.name)
+                            .filter((name: any) => typeof name === 'string' && name.trim().length > 0);
+                        const nonDummy = names.filter((name: string) => name !== 'do_not_call_me');
+                        const byIndex = new Map<number, string>();
+                        (transformed.tools as any[]).forEach((tool: any, index: number) => {
+                            const name = tool?.function?.name;
+                            if (typeof name === 'string' && name.trim().length > 0 && name !== 'do_not_call_me') {
+                                byIndex.set(index, name);
+                            }
+                        });
+                        toolNameHints = {
+                            byIndex,
+                            defaultName: nonDummy.length === 1 ? nonDummy[0] : undefined,
+                        };
+                    }
                     
                     // Ensure max_tokens is set for models with low default limits
                     // This is especially important for flash models
@@ -628,12 +653,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 // Transform streaming response
                 logInfo(`Transforming streaming response to Responses API format, URL: ${rewrittenUrl}`);
                 logger.info('[qwen-auth] Transforming streaming response to Responses API format');
-                return transformStreamingResponse(response);
+                return transformStreamingResponse(response, toolNameHints);
             } else {
                 // Transform non-streaming response
                 logInfo(`Transforming non-streaming response to Responses API format, URL: ${rewrittenUrl}`);
                 logger.info('[qwen-auth] Transforming non-streaming response to Responses API format');
-                return await transformNonStreamingResponse(response);
+                return await transformNonStreamingResponse(response, toolNameHints);
             }
         };
     };
@@ -641,7 +666,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     /**
      * Transform streaming response from Chat Completions to Responses API format
      */
-    const transformStreamingResponse = (response: Response): Response => {
+    const transformStreamingResponse = (
+        response: Response,
+        toolNameHints?: { byIndex: Map<number, string>; defaultName?: string }
+    ): Response => {
         logInfo('transformStreamingResponse called');
         
         if (!response.body) {
@@ -922,6 +950,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         
                         const index = toolCall.index ?? 0; // Default to 0 if no index
                         let callId = toolCall.id;
+                        const hintedName = toolNameHints?.byIndex.get(index) || toolNameHints?.defaultName;
                         
                         // Check if we already have a mapping for this index
                         const existingCallId = toolCallIndices.get(index);
@@ -951,7 +980,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             const outputIndex = 1 + toolCallItems.size; // after message
                             tracked = {
                                 itemId: `fc_${callId}`, // Use fc_ prefix like CLIProxyAPI
-                                name: toolCall.function?.name,
+                                name: toolCall.function?.name || hintedName,
                                 arguments: '',
                                 outputIndex,
                             };
@@ -966,7 +995,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                     id: tracked.itemId,
                                     status: 'in_progress',
                                     call_id: callId,
-                                    name: tracked.name || toolCall.function?.name || 'tool',
+                                    name: tracked.name || toolCall.function?.name || hintedName || 'tool',
                                     arguments: '',
                                 },
                             };
@@ -976,6 +1005,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
                         if (toolCall.function?.name && !tracked.name) {
                             tracked.name = toolCall.function.name;
+                        } else if (!tracked.name && hintedName) {
+                            tracked.name = hintedName;
+                            logDebug(`Inferred tool name for call_id ${callId}: ${tracked.name}`);
                         }
 
                         if (toolCall.function?.arguments) {
@@ -1019,7 +1051,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     /**
      * Transform non-streaming response from Chat Completions to Responses API format
      */
-    const transformNonStreamingResponse = async (response: Response): Promise<Response> => {
+    const transformNonStreamingResponse = async (
+        response: Response,
+        toolNameHints?: { byIndex: Map<number, string>; defaultName?: string }
+    ): Promise<Response> => {
         const text = await response.text();
         
         try {
@@ -1057,13 +1092,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             
             // Add tool calls if present
             if (message.tool_calls && message.tool_calls.length > 0) {
-                for (const toolCall of message.tool_calls) {
+                for (let i = 0; i < message.tool_calls.length; i++) {
+                    const toolCall = message.tool_calls[i];
+                    const hintedName = toolNameHints?.byIndex.get(i) || toolNameHints?.defaultName;
                     output.push({
                         type: 'function_call',
                         id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
                         status: 'completed',
                         call_id: toolCall.id,
-                        name: toolCall.function?.name,
+                        name: toolCall.function?.name || hintedName,
                         arguments: toolCall.function?.arguments || '{}',
                     });
                 }
