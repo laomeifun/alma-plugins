@@ -847,6 +847,16 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
         const responseId = `resp_${Date.now()}`;
         const outputItemId = `msg_${Date.now()}`;
+        let responseModel: string | undefined;
+        let createdAt: number = Math.floor(Date.now() / 1000);
+        let finalUsage:
+            | {
+                  input_tokens?: number;
+                  output_tokens?: number;
+                  total_tokens?: number;
+                  cached_input_tokens?: number;
+              }
+            | undefined;
         let sentCreated = false;
         let sentOutputItemAdded = false;
         let sentContentPartAdded = false;
@@ -896,17 +906,24 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             appendToolCallsToOutput(output);
                         }
 
-                        const completed = {
-                            type: 'response.completed',
-                            response: {
-                                id: responseId,
-                                status: 'completed',
-                                output,
-                            },
-                        };
-                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
-                        controller.close();
-                        return;
+                         const completed = {
+                             type: 'response.completed',
+                             response: {
+                                 id: responseId,
+                                 object: 'response',
+                                 created_at: createdAt,
+                                 model: responseModel || '',
+                                 status: 'completed',
+                                 error: null,
+                                 incomplete_details: null,
+                                 metadata: {},
+                                 output,
+                                 usage: finalUsage,
+                             },
+                         };
+                         controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
+                         controller.close();
+                         return;
                     }
 
                     const text = decoder.decode(value, { stream: true });
@@ -1053,6 +1070,43 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 
                 // Debug: log the raw chunk from Qwen
                 logDebug(`Raw chunk from Qwen: ${data.slice(0, 500)}`);
+
+                // Capture metadata for the final Responses API object
+                if (typeof chunk?.model === 'string' && chunk.model.trim().length > 0) {
+                    responseModel = chunk.model;
+                }
+                if (typeof chunk?.created === 'number' && Number.isFinite(chunk.created)) {
+                    createdAt = chunk.created;
+                }
+                if (chunk?.usage && typeof chunk.usage === 'object') {
+                    const promptTokens =
+                        (chunk.usage as any).prompt_tokens ??
+                        (chunk.usage as any).promptTokens ??
+                        (chunk.usage as any).input_tokens ??
+                        (chunk.usage as any).inputTokens;
+                    const completionTokens =
+                        (chunk.usage as any).completion_tokens ??
+                        (chunk.usage as any).completionTokens ??
+                        (chunk.usage as any).output_tokens ??
+                        (chunk.usage as any).outputTokens;
+                    const totalTokens =
+                        (chunk.usage as any).total_tokens ??
+                        (chunk.usage as any).totalTokens ??
+                        ((typeof promptTokens === 'number' && typeof completionTokens === 'number')
+                            ? promptTokens + completionTokens
+                            : undefined);
+                    const cachedTokens =
+                        (chunk.usage as any).prompt_tokens_details?.cached_tokens ??
+                        (chunk.usage as any).cached_input_tokens ??
+                        (chunk.usage as any).cachedInputTokens;
+
+                    finalUsage = {
+                        input_tokens: typeof promptTokens === 'number' ? promptTokens : undefined,
+                        output_tokens: typeof completionTokens === 'number' ? completionTokens : undefined,
+                        total_tokens: typeof totalTokens === 'number' ? totalTokens : undefined,
+                        cached_input_tokens: typeof cachedTokens === 'number' ? cachedTokens : undefined,
+                    };
+                }
                 
                 // Handle empty choices array (some models send this for usage info)
                 if (!chunk.choices || chunk.choices.length === 0) {
@@ -1073,7 +1127,17 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 if (!sentCreated) {
                     const created = {
                         type: 'response.created',
-                        response: { id: responseId, status: 'in_progress', output: [] },
+                        response: {
+                            id: responseId,
+                            object: 'response',
+                            created_at: createdAt,
+                            model: responseModel || '',
+                            status: 'in_progress',
+                            error: null,
+                            incomplete_details: null,
+                            metadata: {},
+                            output: [],
+                        },
                     };
                     const createdJson = JSON.stringify(created);
                     logDebug(`Emitting response.created: ${createdJson}`);
@@ -1320,12 +1384,17 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 id: responseId,
                 object: 'response',
                 created_at: data.created || Math.floor(Date.now() / 1000),
+                model: data.model || '',
                 status: 'completed',
+                error: null,
+                incomplete_details: null,
+                metadata: {},
                 output,
                 usage: data.usage ? {
                     input_tokens: data.usage.prompt_tokens,
                     output_tokens: data.usage.completion_tokens,
                     total_tokens: data.usage.total_tokens,
+                    cached_input_tokens: data.usage.prompt_tokens_details?.cached_tokens,
                 } : undefined,
             };
 
@@ -1333,7 +1402,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 status: response.status,
                 statusText: response.statusText,
                 headers: new Headers({
-                    'content-type': 'application/json',
+                    'content-type': 'application/json; charset=utf-8',
                 }),
             });
         } catch {
