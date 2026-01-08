@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import type { PluginContext, PluginActivation } from 'alma-plugin-api';
 
 /**
@@ -8,14 +7,28 @@ import type { PluginContext, PluginActivation } from 'alma-plugin-api';
  * of an Alma plugin. It registers a tool and a command that greet the user.
  */
 
-// Define the parameter schema using Zod
-const greetParamsSchema = z.object({
-    name: z.string().describe('The name of the person to greet'),
-    language: z
-        .enum(['en', 'zh', 'ja', 'es', 'fr'])
-        .default('en')
-        .describe('The language to use for the greeting'),
-});
+// Define the parameter schema using JSON Schema format
+const greetParamsSchema = {
+    type: 'object',
+    properties: {
+        name: {
+            type: 'string',
+            description: 'The name of the person to greet',
+        },
+        language: {
+            type: 'string',
+            enum: ['en', 'zh', 'ja', 'es', 'fr'],
+            default: 'en',
+            description: 'The language to use for the greeting',
+        },
+    },
+    required: ['name'],
+} as const;
+
+type GreetParams = {
+    name: string;
+    language?: 'en' | 'zh' | 'ja' | 'es' | 'fr';
+};
 
 export async function activate(context: PluginContext): Promise<PluginActivation> {
     const { logger, tools, commands, ui } = context;
@@ -27,7 +40,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         description: 'Say hello to the user with a personalized message',
         parameters: greetParamsSchema,
         execute: async (params, _toolContext) => {
-            const { name, language } = params;
+            const { name, language = 'en' } = params as GreetParams;
 
             const greetings: Record<string, string> = {
                 en: `Hello, ${name}! Welcome to Alma!`,
