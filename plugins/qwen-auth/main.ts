@@ -698,6 +698,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         const toolCallItems = new Map<string, { itemId: string; name?: string; arguments: string; outputIndex: number }>();
         // Map from tool_call index to call_id (for Qwen models that send index without id)
         const toolCallIndices = new Map<number, string>();
+        let toolCallsFinalized = false;
 
         const stream = new ReadableStream({
             async pull(controller) {
@@ -727,36 +728,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             content: [{ type: 'output_text', text: fullContent }],
                         });
 
-                        // Finalize any function_call items
-                        for (const [callId, item] of toolCallItems.entries()) {
-                            const finalArgs = item.arguments || '{}';
-                            
-                            // First, emit function_call_arguments.done event
-                            const argsDone = {
-                                type: 'response.function_call_arguments.done',
-                                item_id: item.itemId,
-                                output_index: item.outputIndex,
-                                call_id: callId,
-                                arguments: finalArgs,
-                            };
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(argsDone)}\n\n`));
-                            
-                            // Then emit output_item.done event
-                            const callItem = {
-                                type: 'function_call',
-                                id: item.itemId,
-                                status: 'completed',
-                                call_id: callId,
-                                name: item.name || 'tool',
-                                arguments: finalArgs,
-                            };
-                            const callDone = {
-                                type: 'response.output_item.done',
-                                output_index: item.outputIndex,
-                                item: callItem,
-                            };
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(callDone)}\n\n`));
-                            output.push(callItem);
+                        // Finalize any function_call items if not already done
+                        if (!toolCallsFinalized) {
+                            finalizeToolCalls(controller, output);
                         }
 
                         const completed = {
@@ -854,6 +828,41 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(outputDone)}\n\n`));
             
             sentMessageDone = true;
+        }
+
+        function finalizeToolCalls(controller: ReadableStreamDefaultController, output: any[]) {
+            if (toolCallsFinalized) return;
+            for (const [callId, item] of toolCallItems.entries()) {
+                const finalArgs = item.arguments || '{}';
+
+                // First, emit function_call_arguments.done event
+                const argsDone = {
+                    type: 'response.function_call_arguments.done',
+                    item_id: item.itemId,
+                    output_index: item.outputIndex,
+                    call_id: callId,
+                    arguments: finalArgs,
+                };
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(argsDone)}\n\n`));
+
+                // Then emit output_item.done event
+                const callItem = {
+                    type: 'function_call',
+                    id: item.itemId,
+                    status: 'completed',
+                    call_id: callId,
+                    name: item.name || 'tool',
+                    arguments: finalArgs,
+                };
+                const callDone = {
+                    type: 'response.output_item.done',
+                    output_index: item.outputIndex,
+                    item: callItem,
+                };
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(callDone)}\n\n`));
+                output.push(callItem);
+            }
+            toolCallsFinalized = true;
         }
 
         function processLine(line: string, controller: ReadableStreamDefaultController) {
@@ -1029,12 +1038,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 }
                 
                 // Handle finish_reason
-                if (finishReason) {
-                    // If finish_reason is 'tool_calls' or 'function_call', we might need to ensure
-                    // all tool calls are properly closed/finalized if we were tracking state,
-                    // but in this stateless stream transform, we just rely on the final 'done' event.
-                    // However, some clients might expect a specific event or just the stream end.
-                    // For now, we do nothing special as the stream end (done: true) handles completion.
+                if (finishReason === 'tool_calls' || finishReason === 'function_call') {
+                    // Some Qwen streams do not terminate promptly; finalize tool calls now so
+                    // the host can execute the tool instead of staying Pending.
+                    const output: any[] = [];
+                    finalizeToolCalls(controller, output);
                 }
             } catch {
                 // Skip malformed JSON
