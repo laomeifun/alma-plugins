@@ -853,13 +853,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
                 return transformedStream;
             } else {
-                // For tool selection requests, return the raw Chat Completions response
-                // Alma's tool selection logic expects Chat Completions format, not Responses API
-                if (isToolSelectionRequest) {
-                    logInfo(`Tool selection request - returning raw Chat Completions response`);
-                    return response;
-                }
-                
                 // Transform non-streaming response
                 logInfo(`Transforming non-streaming response to Responses API format, URL: ${rewrittenUrl}`);
                 logger.info('[qwen-auth] Transforming non-streaming response to Responses API format');
@@ -1484,7 +1477,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 }
             }
 
-            const transformed = {
+            const transformed: Record<string, unknown> = {
                 id: responseId,
                 object: 'response',
                 created_at: data.created || Math.floor(Date.now() / 1000),
@@ -1494,6 +1487,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 incomplete_details: null,
                 metadata: {},
                 output,
+                output_text: messageText, // Top-level output_text for easy access (matches OpenAI Responses API)
                 usage: data.usage ? {
                     input_tokens: data.usage.prompt_tokens,
                     output_tokens: data.usage.completion_tokens,
