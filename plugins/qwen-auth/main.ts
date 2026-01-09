@@ -912,6 +912,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     const { done, value } = await reader.read();
                     
                     if (done) {
+                        logDebug('[qwen-auth] Stream done, processing final response');
                         // Process any remaining buffer
                         if (buffer.trim()) {
                             processLine(buffer, controller);
@@ -953,9 +954,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                  incomplete_details: null,
                                  metadata: {},
                                  output,
+                                 output_text: fullContent, // Top-level output_text for easy access
                                  usage: finalUsage,
                              },
                          };
+                         logDebug(`[qwen-auth] Emitting response.completed with output_text: ${fullContent.slice(0, 200)}`);
                          controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
                          controller.close();
                          return;
