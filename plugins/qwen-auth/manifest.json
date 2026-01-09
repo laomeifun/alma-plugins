@@ -1,7 +1,7 @@
 {
     "id": "qwen-auth",
     "name": "Qwen Auth",
-    "version": "1.7.1",
+    "version": "1.7.2",
     "description": "Use Alibaba Qwen AI models with Alma via OAuth Device Flow. Access Qwen models directly from your Qwen account.",
     "author": {
         "name": "Alma Community"

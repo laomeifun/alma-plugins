@@ -1495,7 +1495,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 } : undefined,
             };
 
-            return new Response(JSON.stringify(transformed), {
+            const transformedJson = JSON.stringify(transformed);
+            logDebug(`[qwen-auth] Final transformed response (first 500): ${transformedJson.slice(0, 500)}`);
+
+            return new Response(transformedJson, {
                 status: response.status,
                 statusText: response.statusText,
                 headers: new Headers({
