@@ -853,7 +853,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 // Transform non-streaming response
                 logInfo(`Transforming non-streaming response to Responses API format, URL: ${rewrittenUrl}`);
                 logger.info('[qwen-auth] Transforming non-streaming response to Responses API format');
-                return await transformNonStreamingResponse(response, toolNameHints);
+                return await transformNonStreamingResponse(response, toolNameHints, isToolSelectionRequest);
             }
         };
     };
@@ -1337,7 +1337,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
      */
     const transformNonStreamingResponse = async (
         response: Response,
-        toolNameHints?: { byIndex: Map<number, string>; defaultName?: string }
+        toolNameHints?: { byIndex: Map<number, string>; defaultName?: string },
+        isToolSelectionRequest?: boolean
     ): Promise<Response> => {
         const text = await response.text();
         logDebug(`transformNonStreamingResponse raw text (first 500): ${text.slice(0, 500)}`);
@@ -1377,6 +1378,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
             if (isToolSelectionRequest) {
                 let jsonCandidate = messageText.trim();
+                logDebug(`[qwen-auth] Tool selection response raw text (first 300): ${jsonCandidate.slice(0, 300)}`);
                 if (jsonCandidate.startsWith('```')) {
                     const fenceIndex = jsonCandidate.indexOf('\n');
                     if (fenceIndex !== -1) {
