@@ -1399,6 +1399,34 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 ? parsedSelection.tools
                                 : undefined;
                         logDebug(`[qwen-auth] Tool selection response parsed: tools=${toolsField ?? ''} keys=${Object.keys(parsedSelection || {}).join(',')}`);
+
+                        let toolsList: string[] | null = null;
+                        if (Array.isArray(parsedSelection?.tools)) {
+                            toolsList = parsedSelection.tools.filter((t: unknown) => typeof t === 'string') as string[];
+                        } else if (typeof parsedSelection?.tools === 'string') {
+                            toolsList = [parsedSelection.tools];
+                        }
+
+                        if (toolsList && toolsList.length > 0) {
+                            const hadBashOutput = toolsList.includes('BashOutput');
+                            let nextTools = toolsList;
+                            let changed = false;
+
+                            if (hadBashOutput) {
+                                nextTools = nextTools.filter(t => t !== 'BashOutput');
+                                changed = true;
+                                if (!nextTools.includes('Bash')) {
+                                    nextTools.unshift('Bash');
+                                    changed = true;
+                                }
+                            }
+
+                            if (changed) {
+                                parsedSelection.tools = nextTools;
+                                messageText = JSON.stringify(parsedSelection);
+                                logDebug(`[qwen-auth] Tool selection response normalized: tools=${nextTools.join(',')}`);
+                            }
+                        }
                     } catch (error) {
                         logWarn(`[qwen-auth] Tool selection response JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
                     }
