@@ -441,7 +441,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     if (Array.isArray(parsed.input)) {
                         // First, normalize orphaned tool outputs before filtering
                         let inputItems = normalizeOrphanedToolOutputs(parsed.input);
-                        inputItems = addAlmaBridgeMessage(inputItems, hasToolDefinitions) || inputItems;
+                        // Add Alma bridge message when tools are present OR when this is a tool selection request
+                        // Tool selection requests need the bridge to know correct Alma tool names
+                        const shouldAddBridge = hasToolDefinitions || isToolSelectionRequest;
+                        inputItems = addAlmaBridgeMessage(inputItems, shouldAddBridge) || inputItems;
                         
                         // Expand item_references: for each function_call_output, ensure there's a preceding
                         // assistant message with tool_calls. If the function_call is referenced via item_reference,
@@ -1409,7 +1412,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
                         if (toolsList && toolsList.length > 0) {
                             const hadBashOutput = toolsList.includes('BashOutput');
-                            let nextTools = toolsList;
+                            logDebug(`[qwen-auth] Tool selection: toolsList=${JSON.stringify(toolsList)}, hadBashOutput=${hadBashOutput}`);
+                            let nextTools = [...toolsList]; // Clone to avoid mutation issues
                             let changed = false;
 
                             if (hadBashOutput) {
@@ -1417,15 +1421,17 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 changed = true;
                                 if (!nextTools.includes('Bash')) {
                                     nextTools.unshift('Bash');
-                                    changed = true;
                                 }
+                                logDebug(`[qwen-auth] Tool selection: after BashOutput replacement, nextTools=${JSON.stringify(nextTools)}`);
                             }
 
                             if (changed) {
                                 parsedSelection.tools = nextTools;
                                 messageText = JSON.stringify(parsedSelection);
-                                logDebug(`[qwen-auth] Tool selection response normalized: tools=${nextTools.join(',')}`);
+                                logDebug(`[qwen-auth] Tool selection response normalized: tools=${nextTools.join(',')}, messageText=${messageText}`);
                             }
+                        } else {
+                            logDebug(`[qwen-auth] Tool selection: toolsList is empty or null`);
                         }
                     } catch (error) {
                         logWarn(`[qwen-auth] Tool selection response JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
