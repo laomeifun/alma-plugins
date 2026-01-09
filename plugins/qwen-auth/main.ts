@@ -193,12 +193,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
             if (!finalResponse) {
                 logWarn('Could not find final response in Responses SSE stream');
+                logDebug(`[qwen-auth] SSE stream full text: ${fullText.slice(0, 1000)}`);
                 return new Response(fullText, {
                     status: response.status,
                     statusText: response.statusText,
                     headers: response.headers,
                 });
             }
+
+            logDebug(`[qwen-auth] convertResponsesSseToJson found response: ${JSON.stringify(finalResponse).slice(0, 500)}`);
 
             const headers = new Headers(response.headers);
             headers.set('content-type', 'application/json; charset=utf-8');
