@@ -15,7 +15,6 @@ import type { PluginContext, PluginActivation } from 'alma-plugin-api';
 import { TokenStore } from './lib/token-store';
 import { initiateDeviceFlow, pollForToken } from './lib/auth';
 import { QWEN_MODELS, getBaseModel } from './lib/models';
-import { logDebug, logInfo, logError, logWarn, getLogFilePath } from './lib/file-logger';
 import { addAlmaBridgeMessage } from './lib/alma-bridge';
 
 // ============================================================================
@@ -48,20 +47,12 @@ const DEFAULT_RETRY_AFTER_MS = 60 * 1000;
 // ============================================================================
 
 export async function activate(context: PluginContext): Promise<PluginActivation> {
-    const { logger, storage, providers, commands, ui } = context;
+    const { storage, providers, commands, ui } = context;
 
-    logger.info('Qwen Auth plugin activating...');
-    logInfo('Qwen Auth plugin activating...');
-    
-    // Log the log file path for debugging
-    const logPath = getLogFilePath();
-    if (logPath) {
-        logger.info(`[qwen-auth] Debug logs will be written to: ${logPath}`);
-        ui.showNotification(`Qwen Auth debug logs: ${logPath}`, { type: 'info', duration: 5000 });
-    }
+
 
     // Initialize token store
-    const tokenStore = new TokenStore(storage.secrets, logger);
+    const tokenStore = new TokenStore(storage.secrets);
     await tokenStore.initialize();
 
     // =========================================================================
@@ -192,16 +183,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             }
 
             if (!finalResponse) {
-                logWarn('Could not find final response in Responses SSE stream');
-                logDebug(`[qwen-auth] SSE stream full text: ${fullText.slice(0, 1000)}`);
                 return new Response(fullText, {
                     status: response.status,
                     statusText: response.statusText,
                     headers: response.headers,
                 });
             }
-
-            logDebug(`[qwen-auth] convertResponsesSseToJson found response: ${JSON.stringify(finalResponse).slice(0, 500)}`);
 
             const headers = new Headers(response.headers);
             headers.set('content-type', 'application/json; charset=utf-8');
@@ -320,26 +307,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 try {
                     let parsed = JSON.parse(bodyText);
                     
-                    // Extra diagnostics: dump top-level keys and tool/function types
-                    const parsedKeys = Array.isArray(parsed) ? 'array' : Object.keys(parsed || {}).join(',');
-                    logDebug(`[qwen-auth] Parsed body keys: ${parsedKeys}`);
-                    const toolsType = parsed?.tools !== undefined ? typeof parsed.tools : 'absent';
-                    const functionsType = parsed?.functions !== undefined ? typeof parsed.functions : 'absent';
-                    logDebug(`[qwen-auth] tools type=${toolsType} functions type=${functionsType}`);
-                    if (parsed?.tools && !Array.isArray(parsed.tools)) {
-                        logWarn(`[qwen-auth] tools is not an array (type=${typeof parsed.tools})`);
-                    }
-                    if (parsed?.functions && !Array.isArray(parsed.functions)) {
-                        logWarn(`[qwen-auth] functions is not an array (type=${typeof parsed.functions})`);
-                    }
-                    if ((!parsed?.tools || parsed.tools.length === 0) && (!parsed?.functions || parsed.functions.length === 0)) {
-                        logDebug(`[qwen-auth] No tools/functions in request body, bodyText(first 400)=${bodyText.slice(0, 400)}`);
-                    }
-                    
                     // Debug: log the input to help diagnose issues
                     if (Array.isArray(parsed.input)) {
                         const inputTypes = parsed.input.map((item: any) => item.type);
-                        logger.debug(`[qwen-auth] Request input types: ${JSON.stringify(inputTypes)}`);
 
                         const systemMessage = parsed.input.find((item: any) => item?.role === 'system');
                         if (systemMessage?.content) {
@@ -351,16 +321,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                     : String(content);
                             if (systemText.includes('tool selection assistant') || systemText.includes('Available built-in tools')) {
                                 isToolSelectionRequest = true;
-                                logDebug('[qwen-auth] Detected tool selection request (system prompt match)');
                             }
                         }
 
                         // Log function_call_output items for debugging
                         const toolOutputs = parsed.input.filter((item: any) => item.type === 'function_call_output');
                         if (toolOutputs.length > 0) {
-                            logger.debug(`[qwen-auth] Found ${toolOutputs.length} function_call_output items`);
                             for (const output of toolOutputs) {
-                                logger.debug(`[qwen-auth] Tool output call_id: ${output.call_id}, name: ${output.name}`);
                             }
                         }
                     }
@@ -372,17 +339,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     const toolsInput = Array.isArray(parsed.tools) ? parsed.tools : [];
                     const functionsInput = Array.isArray(parsed.functions) ? parsed.functions : [];
                     const hasToolDefinitions = toolsInput.length > 0 || functionsInput.length > 0;
-                    logDebug(
-                        `[qwen-auth] Request parsed: requestedStreaming=${requestedStreaming} tools=${toolsInput.length} functions=${functionsInput.length} tool_choice=${parsed.tool_choice !== undefined} function_call=${parsed.function_call !== undefined}`
-                    );
 
                     // Always use streaming mode for Qwen, then convert to JSON if needed
                     // This ensures consistent response format matching OpenAI Responses API
                     qwenStreaming = true;
                     forcedStreamingForTools = !requestedStreaming; // Track if we need to convert back to JSON
-                    if (forcedStreamingForTools) {
-                        logInfo('Forcing Qwen streaming mode for non-streaming request');
-                    }
                     
                     // Transform from Responses API format to Chat Completions format
                     const transformed: Record<string, unknown> = {
@@ -606,7 +567,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         
                         // Debug: log the transformed messages
                         const msgRoles = messages.map((m: any) => m.role + (m.tool_calls ? `[${m.tool_calls.length} tool_calls]` : '') + (m.tool_call_id ? `[tool_call_id=${m.tool_call_id}]` : ''));
-                        logger.debug(`[qwen-auth] Transformed message roles: ${JSON.stringify(msgRoles)}`);
                         
                         if (messages.length > 0) {
                             const lastMsg = messages[messages.length - 1];
@@ -652,7 +612,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         if (convertedTools.length > 0) {
                             transformed.tools = convertedTools;
                         } else {
-                            logWarn('[qwen-auth] Tools/functions were provided but none could be converted; injecting dummy tool');
                             transformed.tools = [{
                                 type: 'function',
                                 function: {
@@ -747,7 +706,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     // Keep original body if parsing fails
                 }
             } else if (init?.body) {
-                logDebug('[qwen-auth] Request body is not JSON text; skipping request transform');
             }
 
             // Helper function to make request with token
@@ -785,7 +743,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
             // Handle unauthorized - try to refresh token and retry once
             if (response.status === HTTP_STATUS.UNAUTHORIZED) {
-                logger.warn('Unauthorized response, attempting token refresh...');
                 
                 try {
                     // Force token refresh
@@ -793,16 +750,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     accessToken = await tokenStore.getValidAccessToken();
                     
                     // Retry the request with new token
-                    logger.info('Token refreshed, retrying request...');
                     response = await makeRequest(accessToken);
                     
                     // If still unauthorized after refresh, the refresh token is also invalid
                     if (response.status === HTTP_STATUS.UNAUTHORIZED) {
-                        logger.error('Still unauthorized after token refresh. Please login again.');
                         ui.showError('Session expired. Please login to Qwen again.');
                     }
                 } catch (refreshError) {
-                    logger.error('Token refresh failed:', refreshError);
                     ui.showError('Session expired. Please login to Qwen again.');
                 }
             }
@@ -810,14 +764,11 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             // Handle 404 Not Found - likely wrong URL or model
             if (response.status === 404) {
                 const errorText = await response.clone().text();
-                logger.error(`404 Not Found: ${url}`, errorText);
-                logger.error('This may indicate wrong API endpoint or unsupported model');
             }
 
             // Handle rate limiting
             if (response.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
                 const retryAfterMs = parseRetryAfter(response);
-                logger.warn(`Rate limited, retry after ${retryAfterMs}ms`);
 
                 const headers = new Headers(response.headers);
                 headers.set('retry-after', String(Math.ceil(retryAfterMs / 1000)));
@@ -831,35 +782,27 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             // Handle server errors
             if (response.status >= HTTP_STATUS.SERVER_ERROR) {
                 const errorText = await response.clone().text();
-                logger.error(`Server error: ${response.status}`, errorText);
             }
 
             // Log non-OK responses for debugging
             if (!response.ok) {
                 const errorText = await response.clone().text();
-                logger.warn(`Qwen API response ${response.status}: ${errorText.slice(0, 500)}`);
-                logWarn(`Qwen API error response: ${response.status} - ${errorText.slice(0, 500)}`);
                 return response;
             }
 
             // Transform response from Chat Completions format to Responses API format
             if (qwenStreaming) {
                 // Transform streaming response
-                logInfo(`Transforming streaming response to Responses API format, URL: ${rewrittenUrl}`);
-                logger.info('[qwen-auth] Transforming streaming response to Responses API format');
                 const transformedStream = transformStreamingResponse(response, toolNameHints);
 
                 // If caller requested non-streaming, convert the Responses SSE stream to plain JSON.
                 if (!requestedStreaming) {
-                    logInfo(`Converting Responses SSE stream to JSON (forced streaming), URL: ${rewrittenUrl}`);
                     return await convertResponsesSseToJson(transformedStream);
                 }
 
                 return transformedStream;
             } else {
                 // Transform non-streaming response
-                logInfo(`Transforming non-streaming response to Responses API format, URL: ${rewrittenUrl}`);
-                logger.info('[qwen-auth] Transforming non-streaming response to Responses API format');
                 return await transformNonStreamingResponse(response, toolNameHints, isToolSelectionRequest);
             }
         };
@@ -872,10 +815,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         response: Response,
         toolNameHints?: { byIndex: Map<number, string>; defaultName?: string }
     ): Response => {
-        logInfo('transformStreamingResponse called');
-        
         if (!response.body) {
-            logWarn('No response body, returning original response');
             return response;
         }
 
@@ -915,7 +855,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     const { done, value } = await reader.read();
                     
                     if (done) {
-                        logDebug('[qwen-auth] Stream done, processing final response');
                         // Process any remaining buffer
                         if (buffer.trim()) {
                             processLine(buffer, controller);
@@ -961,7 +900,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                  usage: finalUsage,
                              },
                          };
-                         logDebug(`[qwen-auth] Emitting response.completed with output_text: ${fullContent.slice(0, 200)}`);
                          controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
                          controller.close();
                          return;
@@ -996,7 +934,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     item: { type: 'message', id: outputItemId, status: 'in_progress', role: 'assistant', content: [] },
                 };
                 const addedJson = JSON.stringify(added);
-                logDebug(`Emitting response.output_item.added (late): ${addedJson}`);
                 controller.enqueue(encoder.encode(`data: ${addedJson}\n\n`));
                 sentOutputItemAdded = true;
             }
@@ -1012,7 +949,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     part: { type: 'output_text', text: '' },
                 };
                 const partAddedJson = JSON.stringify(partAdded);
-                logDebug(`Emitting response.content_part.added (late): ${partAddedJson}`);
                 controller.enqueue(encoder.encode(`data: ${partAddedJson}\n\n`));
                 sentContentPartAdded = true;
             }
@@ -1110,7 +1046,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 const chunk = JSON.parse(data);
                 
                 // Debug: log the raw chunk from Qwen
-                logDebug(`Raw chunk from Qwen: ${data.slice(0, 500)}`);
 
                 // Capture metadata for the final Responses API object
                 if (typeof chunk?.model === 'string' && chunk.model.trim().length > 0) {
@@ -1152,7 +1087,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 // Handle empty choices array (some models send this for usage info)
                 if (!chunk.choices || chunk.choices.length === 0) {
                     // This might be a usage-only chunk, skip it
-                    logDebug('Empty choices array, skipping');
                     return;
                 }
                 
@@ -1160,7 +1094,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 const finishReason = chunk.choices?.[0]?.finish_reason;
                 
                 if (!delta && !finishReason) {
-                    logDebug('No delta and no finishReason, skipping');
                     return;
                 }
 
@@ -1181,7 +1114,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         },
                     };
                     const createdJson = JSON.stringify(created);
-                    logDebug(`Emitting response.created: ${createdJson}`);
                     controller.enqueue(encoder.encode(`data: ${createdJson}\n\n`));
                     sentCreated = true;
                 }
@@ -1196,7 +1128,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         item: { type: 'message', id: outputItemId, status: 'in_progress', role: 'assistant', content: [] },
                     };
                     const addedJson = JSON.stringify(added);
-                    logDebug(`Emitting response.output_item.added: ${addedJson}`);
                     controller.enqueue(encoder.encode(`data: ${addedJson}\n\n`));
                     sentOutputItemAdded = true;
                 }
@@ -1213,7 +1144,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             part: { type: 'output_text', text: '' },
                         };
                         const partAddedJson = JSON.stringify(partAdded);
-                        logDebug(`Emitting response.content_part.added: ${partAddedJson}`);
                         controller.enqueue(encoder.encode(`data: ${partAddedJson}\n\n`));
                         sentContentPartAdded = true;
                     }
@@ -1237,7 +1167,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         emitMessageDone(controller);
                     }
                     
-                    logDebug(`Received tool_calls in delta: ${JSON.stringify(delta.tool_calls).slice(0, 500)}`);
                     for (const toolCall of delta.tool_calls) {
                         // Qwen sometimes sends tool_calls with index but no id in subsequent chunks
                         // We need to track the mapping between index and callId
@@ -1254,7 +1183,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             // We have a real id now, but we already generated one
                             // This shouldn't happen often, but if it does, use the existing one
                             // to maintain consistency with already-emitted events
-                            logDebug(`Ignoring new callId ${callId} for index ${index}, using existing ${existingCallId}`);
                             callId = existingCallId;
                         } else if (!callId && existingCallId) {
                             // No id in this chunk, use the existing mapping
@@ -1262,7 +1190,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         } else if (!callId && !existingCallId) {
                             // No id and no existing mapping - generate one
                             callId = `call_${Date.now()}_${index}`;
-                            logDebug(`Generated callId for tool_call index ${index}: ${callId}`);
                         }
                         
                         // Save/update the mapping between index and callId
@@ -1294,7 +1221,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                     arguments: '',
                                 },
                             };
-                            logDebug(`Emitting response.output_item.added (function_call): ${JSON.stringify(addedCall).slice(0, 500)}`);
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(addedCall)}\n\n`));
                         }
 
@@ -1302,7 +1228,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             tracked.name = toolCall.function.name;
                         } else if (!tracked.name && hintedName) {
                             tracked.name = hintedName;
-                            logDebug(`Inferred tool name for call_id ${callId}: ${tracked.name}`);
                         }
 
                         if (toolCall.function?.arguments) {
@@ -1314,7 +1239,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 call_id: callId,
                                 delta: toolCall.function.arguments,
                             };
-                            logDebug(`Emitting response.function_call_arguments.delta: ${JSON.stringify(funcDelta).slice(0, 500)}`);
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(funcDelta)}\n\n`));
                         }
                     }
@@ -1331,7 +1255,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 // Handle finish_reason: 'stop' - Qwen may not close the stream properly
                 // We need to emit the final events and close the stream ourselves
                 if (finishReason === 'stop') {
-                    logDebug('[qwen-auth] Received finish_reason=stop, finalizing stream');
                     
                     // Build output array
                     const output: any[] = [];
@@ -1375,7 +1298,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             usage: finalUsage,
                         },
                     };
-                    logDebug(`[qwen-auth] Emitting response.completed on finish_reason=stop: ${fullContent.slice(0, 200)}`);
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
                     controller.close();
                     return;
@@ -1404,7 +1326,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         isToolSelectionRequest?: boolean
     ): Promise<Response> => {
         const text = await response.text();
-        logDebug(`transformNonStreamingResponse raw text (first 500): ${text.slice(0, 500)}`);
         
         try {
             const data = JSON.parse(text);
@@ -1412,7 +1333,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             const message = choice?.message;
             
             if (!message) {
-                logWarn('transformNonStreamingResponse: missing message in choices[0], returning raw response');
                 return new Response(text, {
                     status: response.status,
                     statusText: response.statusText,
@@ -1421,7 +1341,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             }
 
             const toolCallsCount = Array.isArray(message.tool_calls) ? message.tool_calls.length : 0;
-            logDebug(`transformNonStreamingResponse parsed: model=${data.model || ''}, tool_calls=${toolCallsCount}, contentType=${typeof message.content}`);
 
             const responseId = `resp_${data.id || Date.now()}`;
             const outputItemId = `msg_${Date.now()}`;
@@ -1441,7 +1360,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
             if (isToolSelectionRequest) {
                 let jsonCandidate = messageText.trim();
-                logDebug(`[qwen-auth] Tool selection response raw text (first 300): ${jsonCandidate.slice(0, 300)}`);
                 if (jsonCandidate.startsWith('```')) {
                     const fenceIndex = jsonCandidate.indexOf('\n');
                     if (fenceIndex !== -1) {
@@ -1461,7 +1379,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             : typeof parsedSelection?.tools === 'string'
                                 ? parsedSelection.tools
                                 : undefined;
-                        logDebug(`[qwen-auth] Tool selection response parsed: tools=${toolsField ?? ''} keys=${Object.keys(parsedSelection || {}).join(',')}`);
 
                         let toolsList: string[] | null = null;
                         if (Array.isArray(parsedSelection?.tools)) {
@@ -1472,7 +1389,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
                         if (toolsList && toolsList.length > 0) {
                             const hadBashOutput = toolsList.includes('BashOutput');
-                            logDebug(`[qwen-auth] Tool selection: toolsList=${JSON.stringify(toolsList)}, hadBashOutput=${hadBashOutput}`);
                             let nextTools = [...toolsList]; // Clone to avoid mutation issues
                             let changed = false;
 
@@ -1482,22 +1398,17 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                                 if (!nextTools.includes('Bash')) {
                                     nextTools.unshift('Bash');
                                 }
-                                logDebug(`[qwen-auth] Tool selection: after BashOutput replacement, nextTools=${JSON.stringify(nextTools)}`);
                             }
 
                             if (changed) {
                                 parsedSelection.tools = nextTools;
                                 messageText = JSON.stringify(parsedSelection);
-                                logDebug(`[qwen-auth] Tool selection response normalized: tools=${nextTools.join(',')}, messageText=${messageText}`);
                             }
                         } else {
-                            logDebug(`[qwen-auth] Tool selection: toolsList is empty or null`);
                         }
                     } catch (error) {
-                        logWarn(`[qwen-auth] Tool selection response JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
                     }
                 } else {
-                    logWarn('[qwen-auth] Tool selection response is not JSON; cannot parse tools');
                 }
             }
 
@@ -1523,9 +1434,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         : `call_${Date.now()}_${i}`;
                     const rawArgs = toolCall.function?.arguments;
                     const args = typeof rawArgs === 'string' && rawArgs.trim().length > 0 ? rawArgs : '{}';
-                    logDebug(
-                        `transformNonStreamingResponse tool_call[${i}]: name=${toolCall.function?.name || hintedName || 'tool'}, call_id=${callId}, argsLen=${args.length}`
-                    );
                     output.push({
                         type: 'function_call',
                         id: `fc_${callId}`,
@@ -1556,10 +1464,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 } : undefined,
             };
 
-            const transformedJson = JSON.stringify(transformed);
-            logDebug(`[qwen-auth] Final transformed response (first 500): ${transformedJson.slice(0, 500)}`);
-
-            return new Response(transformedJson, {
+            return new Response(JSON.stringify(transformed), {
                 status: response.status,
                 statusText: response.statusText,
                 headers: new Headers({
@@ -1588,7 +1493,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         // which is different from the new OpenAI Responses API format
 
         async initialize() {
-            logger.info('Qwen provider initialized');
         },
 
         async isAuthenticated() {
@@ -1598,7 +1502,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         async authenticate() {
             try {
                 // Initiate device flow
-                logger.info('Starting Qwen device flow authentication...');
                 const deviceFlow = await initiateDeviceFlow();
 
                 // Show user code and verification URL
@@ -1618,7 +1521,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 Waiting for authorization...
                 `.trim();
 
-                logger.info(message);
 
                 // Open browser to verification URL
                 if (deviceFlow.verification_uri_complete) {
@@ -1643,9 +1545,7 @@ Waiting for authorization...
                 const tokens = await pollForToken(
                     deviceFlow.device_code,
                     deviceFlow.code_verifier,
-                    (attempt, maxAttempts) => {
-                        logger.debug(`Polling for token: attempt ${attempt}/${maxAttempts}`);
-                    }
+                    () => {}
                 );
 
                 // Save tokens
@@ -1654,12 +1554,10 @@ Waiting for authorization...
 
                 const emailInfo = tokens.email ? ` (${tokens.email})` : '';
                 ui.showNotification(`Successfully connected to Qwen${emailInfo}!`, { type: 'success' });
-                logger.info('Qwen authentication successful');
 
                 return { success: true };
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Authentication failed';
-                logger.error('Qwen authentication error:', error);
                 ui.showError(`Authentication failed: ${message}`);
                 return { success: false, error: message };
             }
@@ -1668,7 +1566,6 @@ Waiting for authorization...
         async logout() {
             await tokenStore.clearTokens();
             ui.showNotification('Logged out from Qwen', { type: 'info' });
-            logger.info('Qwen logout successful');
         },
 
         async getModels() {
@@ -1735,7 +1632,6 @@ Waiting for authorization...
         }
     });
 
-    logger.info('Qwen Auth plugin activated');
 
     // =========================================================================
     // Return Activation
@@ -1747,7 +1643,6 @@ Waiting for authorization...
             loginCommand.dispose();
             logoutCommand.dispose();
             statusCommand.dispose();
-            logger.info('Qwen Auth plugin deactivated');
         },
     };
 }

@@ -22,12 +22,6 @@ export interface SecretStorage {
     delete(key: string): Promise<void>;
 }
 
-export interface Logger {
-    info(message: string, ...args: unknown[]): void;
-    warn(message: string, ...args: unknown[]): void;
-    error(message: string, ...args: unknown[]): void;
-    debug(message: string, ...args: unknown[]): void;
-}
 
 // ============================================================================
 // Token Store Implementation
@@ -35,13 +29,11 @@ export interface Logger {
 
 export class TokenStore {
     private secrets: SecretStorage;
-    private logger: Logger;
     private cachedTokens: QwenTokens | null = null;
     private refreshPromise: Promise<QwenTokens> | null = null;
 
-    constructor(secrets: SecretStorage, logger: Logger) {
+    constructor(secrets: SecretStorage) {
         this.secrets = secrets;
-        this.logger = logger;
     }
 
     /**
@@ -53,10 +45,8 @@ export class TokenStore {
             if (stored) {
                 const storage: QwenTokenStorage = JSON.parse(stored);
                 this.cachedTokens = this.fromStorage(storage);
-                this.logger.info(`Loaded Qwen tokens for ${storage.email || 'unknown user'}`);
             }
         } catch (error) {
-            this.logger.warn('Failed to load cached tokens:', error);
         }
     }
 
@@ -96,7 +86,6 @@ export class TokenStore {
         this.cachedTokens = tokens;
         const storage = this.toStorage(tokens);
         await this.secrets.set(TOKEN_STORAGE_KEY, JSON.stringify(storage));
-        this.logger.info('Saved Qwen tokens');
     }
 
     /**
@@ -130,7 +119,6 @@ export class TokenStore {
 
         // Check if token needs refresh
         if (isTokenExpired(this.cachedTokens.expires_at)) {
-            this.logger.info('Token expired, refreshing...');
             await this.refreshToken();
         }
 
@@ -162,9 +150,7 @@ export class TokenStore {
             }
 
             await this.saveTokens(newTokens);
-            this.logger.info('Token refreshed successfully');
         } catch (error) {
-            this.logger.error('Token refresh failed:', error);
             throw error;
         } finally {
             this.refreshPromise = null;
@@ -186,7 +172,6 @@ export class TokenStore {
         this.cachedTokens = null;
         await this.secrets.delete(TOKEN_STORAGE_KEY);
         await this.secrets.delete(PENDING_DEVICE_FLOW_KEY);
-        this.logger.info('Cleared Qwen tokens');
     }
 
     /**
