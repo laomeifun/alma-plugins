@@ -304,6 +304,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             let requestedStreaming = false;
             let qwenStreaming = false;
             let forcedStreamingForTools = false;
+            let isToolSelectionRequest = false;
             
             // Tool name hints for mapping empty tool_call names from Qwen
             let toolNameHints: {
@@ -336,7 +337,21 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     if (Array.isArray(parsed.input)) {
                         const inputTypes = parsed.input.map((item: any) => item.type);
                         logger.debug(`[qwen-auth] Request input types: ${JSON.stringify(inputTypes)}`);
-                        
+
+                        const systemMessage = parsed.input.find((item: any) => item?.role === 'system');
+                        if (systemMessage?.content) {
+                            const content = systemMessage.content;
+                            const systemText = typeof content === 'string'
+                                ? content
+                                : Array.isArray(content)
+                                    ? content.map((part: any) => part?.text ?? '').join('')
+                                    : String(content);
+                            if (systemText.includes('tool selection assistant') || systemText.includes('Available built-in tools')) {
+                                isToolSelectionRequest = true;
+                                logDebug('[qwen-auth] Detected tool selection request (system prompt match)');
+                            }
+                        }
+
                         // Log function_call_output items for debugging
                         const toolOutputs = parsed.input.filter((item: any) => item.type === 'function_call_output');
                         if (toolOutputs.length > 0) {
@@ -1358,6 +1373,36 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 messageText = message.content.map((p: any) => p?.text ?? '').join('');
             } else if (message.content != null) {
                 messageText = String(message.content);
+            }
+
+            if (isToolSelectionRequest) {
+                let jsonCandidate = messageText.trim();
+                if (jsonCandidate.startsWith('```')) {
+                    const fenceIndex = jsonCandidate.indexOf('\n');
+                    if (fenceIndex !== -1) {
+                        jsonCandidate = jsonCandidate.slice(fenceIndex + 1);
+                    }
+                    const endFence = jsonCandidate.lastIndexOf('```');
+                    if (endFence !== -1) {
+                        jsonCandidate = jsonCandidate.slice(0, endFence);
+                    }
+                    jsonCandidate = jsonCandidate.trim();
+                }
+                if (jsonCandidate.startsWith('{') && jsonCandidate.endsWith('}')) {
+                    try {
+                        const parsedSelection = JSON.parse(jsonCandidate);
+                        const toolsField = Array.isArray(parsedSelection?.tools)
+                            ? parsedSelection.tools.join(',')
+                            : typeof parsedSelection?.tools === 'string'
+                                ? parsedSelection.tools
+                                : undefined;
+                        logDebug(`[qwen-auth] Tool selection response parsed: tools=${toolsField ?? ''} keys=${Object.keys(parsedSelection || {}).join(',')}`);
+                    } catch (error) {
+                        logWarn(`[qwen-auth] Tool selection response JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
+                    }
+                } else {
+                    logWarn('[qwen-auth] Tool selection response is not JSON; cannot parse tools');
+                }
             }
 
             output.push({
