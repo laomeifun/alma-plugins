@@ -853,6 +853,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
                 return transformedStream;
             } else {
+                // For tool selection requests, return the raw Chat Completions response
+                // Alma's tool selection logic expects Chat Completions format, not Responses API
+                if (isToolSelectionRequest) {
+                    logInfo(`Tool selection request - returning raw Chat Completions response`);
+                    return response;
+                }
+                
                 // Transform non-streaming response
                 logInfo(`Transforming non-streaming response to Responses API format, URL: ${rewrittenUrl}`);
                 logger.info('[qwen-auth] Transforming non-streaming response to Responses API format');
