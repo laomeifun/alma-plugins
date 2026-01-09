@@ -844,6 +844,69 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
             // Transform response from Chat Completions format to Responses API format
             if (qwenStreaming) {
+                // For tool selection requests, we need to handle differently
+                // because Alma's tool selection logic may expect Chat Completions format
+                if (isToolSelectionRequest && !requestedStreaming) {
+                    logInfo(`Tool selection request - consuming stream and returning Chat Completions JSON`);
+                    // Consume the stream and extract the content
+                    const reader = response.body?.getReader();
+                    if (!reader) {
+                        throw new Error('Response has no body');
+                    }
+                    const decoder = new TextDecoder();
+                    let fullText = '';
+                    let content = '';
+                    
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        fullText += decoder.decode(value, { stream: true });
+                    }
+                    
+                    // Parse SSE events to extract content
+                    const lines = fullText.split('\n');
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const data = line.substring(6).trim();
+                        if (data === '[DONE]' || data === '') continue;
+                        try {
+                            const chunk = JSON.parse(data);
+                            const delta = chunk.choices?.[0]?.delta;
+                            if (delta?.content) {
+                                content += delta.content;
+                            }
+                        } catch {
+                            // Skip malformed JSON
+                        }
+                    }
+                    
+                    logDebug(`[qwen-auth] Tool selection extracted content: ${content.slice(0, 300)}`);
+                    
+                    // Return as Chat Completions format
+                    const chatCompletionsResponse = {
+                        id: `chatcmpl-${Date.now()}`,
+                        object: 'chat.completion',
+                        created: Math.floor(Date.now() / 1000),
+                        model: 'qwen3-coder-plus',
+                        choices: [{
+                            index: 0,
+                            message: {
+                                role: 'assistant',
+                                content: content,
+                            },
+                            finish_reason: 'stop',
+                        }],
+                    };
+                    
+                    return new Response(JSON.stringify(chatCompletionsResponse), {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: new Headers({
+                            'content-type': 'application/json; charset=utf-8',
+                        }),
+                    });
+                }
+                
                 // Transform streaming response
                 logInfo(`Transforming streaming response to Responses API format, URL: ${rewrittenUrl}`);
                 logger.info('[qwen-auth] Transforming streaming response to Responses API format');
