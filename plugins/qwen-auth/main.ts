@@ -1324,6 +1324,58 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     const output: any[] = [];
                     finalizeToolCalls(controller, output);
                 }
+                
+                // Handle finish_reason: 'stop' - Qwen may not close the stream properly
+                // We need to emit the final events and close the stream ourselves
+                if (finishReason === 'stop') {
+                    logDebug('[qwen-auth] Received finish_reason=stop, finalizing stream');
+                    
+                    // Build output array
+                    const output: any[] = [];
+                    
+                    // Close message item if not already done
+                    if (!sentMessageDone) {
+                        emitMessageDone(controller);
+                    }
+                    
+                    // Push message to output array
+                    output.push({
+                        type: 'message',
+                        id: outputItemId,
+                        status: 'completed',
+                        role: 'assistant',
+                        content: [{ type: 'output_text', text: fullContent }],
+                    });
+                    
+                    // Finalize any tool calls
+                    if (!toolCallsFinalized && toolCallItems.size > 0) {
+                        finalizeToolCalls(controller, output);
+                    } else if (toolCallItems.size > 0) {
+                        appendToolCallsToOutput(output);
+                    }
+                    
+                    // Emit response.completed
+                    const completed = {
+                        type: 'response.completed',
+                        response: {
+                            id: responseId,
+                            object: 'response',
+                            created_at: createdAt,
+                            model: responseModel || '',
+                            status: 'completed',
+                            error: null,
+                            incomplete_details: null,
+                            metadata: {},
+                            output,
+                            output_text: fullContent,
+                            usage: finalUsage,
+                        },
+                    };
+                    logDebug(`[qwen-auth] Emitting response.completed on finish_reason=stop: ${fullContent.slice(0, 200)}`);
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(completed)}\n\n`));
+                    controller.close();
+                    return;
+                }
             } catch {
                 // Skip malformed JSON
             }
