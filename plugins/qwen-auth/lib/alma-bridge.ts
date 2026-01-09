@@ -132,7 +132,7 @@ export function addAlmaBridgeMessage(input: any[] | undefined, hasTools: boolean
         role: 'developer',
         content: [
             {
-                type: 'input_text',
+                type: 'text',  // Qwen only supports 'text', not 'input_text'
                 text: ALMA_QWEN_BRIDGE,
             },
         ],
