@@ -373,11 +373,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                         `[qwen-auth] Request parsed: requestedStreaming=${requestedStreaming} tools=${toolsInput.length} functions=${functionsInput.length} tool_choice=${parsed.tool_choice !== undefined} function_call=${parsed.function_call !== undefined}`
                     );
 
-                    // Qwen tool calling can be unreliable in non-streaming mode; force streaming when tools are present.
-                    forcedStreamingForTools = !requestedStreaming && hasToolDefinitions;
-                    qwenStreaming = requestedStreaming || forcedStreamingForTools;
+                    // Always use streaming mode for Qwen, then convert to JSON if needed
+                    // This ensures consistent response format matching OpenAI Responses API
+                    qwenStreaming = true;
+                    forcedStreamingForTools = !requestedStreaming; // Track if we need to convert back to JSON
                     if (forcedStreamingForTools) {
-                        logInfo('Forcing Qwen streaming mode for tool-enabled non-streaming request');
+                        logInfo('Forcing Qwen streaming mode for non-streaming request');
                     }
                     
                     // Transform from Responses API format to Chat Completions format
