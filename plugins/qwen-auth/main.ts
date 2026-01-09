@@ -1371,6 +1371,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             metadata: {},
                             output,
                             output_text: fullContent,
+                            text: fullContent, // Also include 'text' for compatibility
                             usage: finalUsage,
                         },
                     };
