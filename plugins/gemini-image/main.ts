@@ -204,7 +204,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     };
 
     // Main hook to intercept /image commands
-    // Note: This modifies the message content to trigger the AI to use the generateImage tool
+    // Transform the command into a detailed request for AI to generate image description
     const eventDisposable = events.on(
         'chat.message.willSend',
         (input, output) => {
@@ -215,23 +215,33 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 return; // Not an image command, let it pass through
             }
 
-            // Transform /image command into a request for the AI to use the generateImage tool
-            let transformedContent = '请使用 generateImage 工具生成图片。';
+            // Transform /image command - ask AI to summarize context and generate image
+            let transformedContent = `请使用 generateImage 工具生成图片。
+
+**重要**：在调用工具时，你需要在 prompt 参数中提供详细的图片描述。`;
             
             if (parsed.userPrompt) {
-                transformedContent += `\n\n图片描述：${parsed.userPrompt}`;
+                transformedContent += `
+
+用户指定的图片内容：${parsed.userPrompt}
+
+请结合我们之前的对话上下文，生成一个详细的图片描述（包括风格、场景、细节等），然后调用 generateImage 工具。`;
             } else {
-                transformedContent += '\n\n请根据我们之前的对话内容，生成一张相关的图片。';
+                transformedContent += `
+
+请仔细回顾我们之前的对话内容，总结出一个适合生成图片的详细描述（包括主题、风格、场景、颜色、细节等），然后调用 generateImage 工具生成相关图片。`;
             }
             
             if (parsed.count > 1) {
-                transformedContent += `\n\n请生成 ${parsed.count} 张图片。`;
+                transformedContent += `
+
+请生成 ${parsed.count} 张图片（设置 count 参数为 ${parsed.count}）。`;
             }
 
             output.content = transformedContent;
-            logger.info(`Transformed /image command: ${transformedContent.substring(0, 100)}...`);
+            logger.info(`Transformed /image command`);
         },
-        { priority: 100 } // High priority to run before other plugins
+        { priority: 100 }
     );
 
     // Register command to set API key
@@ -269,78 +279,43 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     );
 
     // Register a tool for AI to generate images
+    // The AI is responsible for providing a detailed prompt based on conversation context
     const toolDisposable = context.tools.register('generateImage', {
-        description: '根据描述生成图片。当用户要求生成、创建或绘制图片时使用此工具。会自动获取当前对话上下文作为图片生成的参考。',
+        description: '根据详细描述生成图片。调用此工具时，你必须在 prompt 参数中提供完整、详细的图片描述，包括主题、风格、场景、颜色、细节等。如果用户要求根据对话生成图片，你需要先总结对话内容，然后生成一个详细的图片描述传递给此工具。',
         parameters: {
             type: 'object',
             properties: {
                 prompt: {
                     type: 'string',
-                    description: '图片描述，详细描述要生成的图片内容。如果用户没有指定具体内容，可以留空，工具会根据对话上下文自动生成。',
+                    description: '详细的图片描述。必须包含：1) 主题/主体 2) 风格（如写实、卡通、油画等）3) 场景/背景 4) 颜色和光线 5) 其他细节。描述越详细，生成的图片越准确。',
                 },
                 count: {
                     type: 'number',
-                    description: '要生成的图片数量（1-4）',
+                    description: '要生成的图片数量（1-4），默认为 1',
                     default: 1,
                 },
-                includeContext: {
-                    type: 'boolean',
-                    description: '是否包含对话上下文作为图片生成的参考，默认为 true',
-                    default: true,
-                },
             },
-            required: [],
+            required: ['prompt'],
         } as const,
         execute: async (params, toolContext) => {
-            const { 
-                prompt = '', 
-                count = 1, 
-                includeContext = true 
-            } = params as { prompt?: string; count?: number; includeContext?: boolean };
+            const { prompt, count = 1 } = params as { prompt: string; count?: number };
             const config = getSettings();
 
+            if (!prompt || !prompt.trim()) {
+                return {
+                    success: false,
+                    error: '请提供图片描述（prompt 参数不能为空）',
+                };
+            }
+
             try {
-                let finalPrompt = prompt;
-
-                // Get conversation context if enabled
-                if (includeContext) {
-                    try {
-                        // Try to get threadId from toolContext, or use active thread
-                        let threadId = toolContext?.threadId;
-                        
-                        if (!threadId) {
-                            // Fallback: get active thread
-                            const activeThread = await chat.getActiveThread();
-                            threadId = activeThread?.id;
-                        }
-                        
-                        if (threadId) {
-                            const messages = await chat.getMessages(threadId);
-                            if (messages.length > 0) {
-                                finalPrompt = buildPromptFromContext(
-                                    messages,
-                                    prompt,
-                                    config.maxContextMessages
-                                );
-                            }
-                        }
-                    } catch (err) {
-                        logger.warn(`获取对话上下文失败: ${err}`);
-                    }
-                }
-
-                // If still no prompt, use a default
-                if (!finalPrompt.trim()) {
-                    finalPrompt = '请生成一张有创意的图片';
-                }
-
                 const apiKey = await getApiKey();
 
                 const images = await generateImages({
                     baseUrl: config.baseUrl,
                     apiKey,
                     model: config.model,
-                    prompt: finalPrompt,
+                    prompt: prompt,
                     size: config.imageSize,
                     n: Math.max(1, Math.min(4, count)),
                     timeoutMs: config.timeoutMs,
