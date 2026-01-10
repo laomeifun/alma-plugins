@@ -270,34 +270,64 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     // Register a tool for AI to generate images
     const toolDisposable = context.tools.register('generateImage', {
-        description: '根据描述生成图片。当用户要求生成、创建或绘制图片时使用此工具。',
+        description: '根据描述生成图片。当用户要求生成、创建或绘制图片时使用此工具。会自动获取当前对话上下文作为图片生成的参考。',
         parameters: {
             type: 'object',
             properties: {
                 prompt: {
                     type: 'string',
-                    description: '图片描述，详细描述要生成的图片内容',
+                    description: '图片描述，详细描述要生成的图片内容。如果用户没有指定具体内容，可以留空，工具会根据对话上下文自动生成。',
                 },
                 count: {
                     type: 'number',
                     description: '要生成的图片数量（1-4）',
                     default: 1,
                 },
+                includeContext: {
+                    type: 'boolean',
+                    description: '是否包含对话上下文作为图片生成的参考，默认为 true',
+                    default: true,
+                },
             },
-            required: ['prompt'],
+            required: [],
         } as const,
         execute: async (params, toolContext) => {
-            const { prompt, count = 1 } = params as { prompt: string; count?: number };
+            const { 
+                prompt = '', 
+                count = 1, 
+                includeContext = true 
+            } = params as { prompt?: string; count?: number; includeContext?: boolean };
             const config = getSettings();
 
             try {
+                let finalPrompt = prompt;
+
+                // Get conversation context if enabled
+                if (includeContext && toolContext.threadId) {
+                    const messages = await chat.getMessages(toolContext.threadId);
+                    const contextPrompt = buildPromptFromContext(
+                        messages,
+                        prompt,
+                        config.maxContextMessages
+                    );
+                    finalPrompt = contextPrompt;
+                    logger.debug(`使用对话上下文生成图片，上下文长度: ${messages.length} 条消息`);
+                }
+
+                // If still no prompt, use a default
+                if (!finalPrompt.trim()) {
+                    finalPrompt = '请生成一张有创意的图片';
+                }
+
+                logger.info(`生成图片提示词: ${finalPrompt.substring(0, 200)}...`);
+
                 const apiKey = await getApiKey();
 
                 const images = await generateImages({
                     baseUrl: config.baseUrl,
                     apiKey,
                     model: config.model,
-                    prompt,
+                    prompt: finalPrompt,
                     size: config.imageSize,
                     n: Math.max(1, Math.min(4, count)),
                     timeoutMs: config.timeoutMs,
