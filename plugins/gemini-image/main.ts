@@ -404,82 +404,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         }
     );
 
-    // Register command to generate image (can be triggered from command palette)
+    // Register command to generate image (alias for /image)
     const generateImageCommand = context.commands.register(
         'generate',
-        async () => {
-            const config = getSettings();
-            
-            // Ask user for prompt
-            const userPrompt = await ui.showInputBox({
-                title: '生成图片',
-                prompt: '请输入图片描述（留空则根据当前对话生成）',
-                placeholder: '例如：一只橘猫在阳光下睡觉',
-            });
-
-            // User cancelled
-            if (userPrompt === undefined) {
-                return;
-            }
-
-            try {
-                await ui.withProgress(
-                    { title: '🎨 正在生成图片...', cancellable: false },
-                    async (progress) => {
-                        progress.report({ message: '获取对话上下文...' });
-
-                        let finalPrompt = userPrompt;
-
-                        // If no prompt provided, try to get context from active thread
-                        if (!finalPrompt.trim()) {
-                            try {
-                                const activeThread = await chat.getActiveThread();
-                                if (activeThread?.id) {
-                                    const messages = await chat.getMessages(activeThread.id);
-                                    if (messages.length > 0) {
-                                        finalPrompt = buildPromptFromContext(
-                                            messages,
-                                            '',
-                                            config.maxContextMessages
-                                        );
-                                    }
-                                }
-                            } catch (err) {
-                                logger.warn(`获取对话上下文失败: ${err}`);
-                            }
-                        }
-
-                        if (!finalPrompt.trim()) {
-                            finalPrompt = '请生成一张有创意的图片';
-                        }
-
-                        progress.report({ message: '调用 Gemini API...' });
-
-                        const apiKey = await getApiKey();
-                        const images = await generateImages({
-                            baseUrl: config.baseUrl,
-                            apiKey,
-                            model: config.model,
-                            prompt: finalPrompt,
-                            size: config.imageSize,
-                            n: 1,
-                            timeoutMs: config.timeoutMs,
-                        });
-
-                        progress.report({ message: '保存图片...' });
-
-                        const savedPaths = await saveImages(images, config.outputDir);
-                        
-                        ui.showNotification(
-                            `✅ 图片已保存: ${savedPaths[0]}`,
-                            { type: 'success' }
-                        );
-                    }
-                );
-            } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : String(err);
-                ui.showError(`图片生成失败: ${errorMessage}`);
-            }
+        async (args?: string) => {
+            // Execute the image command
+            return await context.commands.execute('image', args);
         }
     );
 
@@ -517,62 +447,12 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         }
     );
 
-    // Register command to select provider
+    // Register command to select provider (alias for /provider)
     const selectProviderCommand = context.commands.register(
         'selectProvider',
-        async () => {
-            try {
-                // Get list of available providers
-                const providerList = await providers.list();
-                
-                if (providerList.length === 0) {
-                    ui.showWarning('没有可用的供应商');
-                    return;
-                }
-
-                // Filter enabled providers
-                const enabledProviders = providerList.filter(p => p.enabled);
-                
-                if (enabledProviders.length === 0) {
-                    ui.showWarning('没有已启用的供应商');
-                    return;
-                }
-
-                // Show quick pick to select provider
-                const items = enabledProviders.map(p => ({
-                    label: p.name,
-                    description: `ID: ${p.id} | Type: ${p.type}`,
-                    value: p.id,
-                }));
-
-                const selectedProviderId = await ui.showQuickPick(items, {
-                    title: '选择图片生成供应商',
-                    placeholder: '选择一个供应商...',
-                });
-
-                if (!selectedProviderId) {
-                    return; // User cancelled
-                }
-
-                // Get the selected provider
-                const selectedProvider = await providers.get(selectedProviderId);
-                
-                if (!selectedProvider) {
-                    ui.showError('无法获取供应商信息');
-                    return;
-                }
-
-                // Save the selected provider ID
-                await storage.local.set('gemini-image-provider', selectedProviderId);
-                await settings.update('geminiImage.providerId', selectedProviderId);
-                
-                ui.showNotification(`已选择供应商: ${selectedProvider.name}`, { type: 'success' });
-                logger.info(`Selected provider: ${selectedProviderId}`);
-
-            } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : String(err);
-                ui.showError(`选择供应商失败: ${errorMessage}`);
-            }
+        async (args?: string) => {
+            // Execute the provider command
+            return await context.commands.execute('provider', args);
         }
     );
 
