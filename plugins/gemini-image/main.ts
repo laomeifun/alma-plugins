@@ -292,7 +292,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     // Register command to set API key
     const setApiKeyCommand = context.commands.register(
-        'geminiImage.setApiKey',
+        'setApiKey',
         async () => {
             const apiKey = await ui.showInputBox({
                 title: '设置 Gemini API Key',
@@ -310,7 +310,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     // Register command to clear API key
     const clearApiKeyCommand = context.commands.register(
-        'geminiImage.clearApiKey',
+        'clearApiKey',
         async () => {
             const confirmed = await ui.showConfirmDialog(
                 '确定要清除已保存的 API Key 吗？',
