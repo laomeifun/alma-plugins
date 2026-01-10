@@ -204,90 +204,34 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     };
 
     // Main hook to intercept /image commands
+    // Note: This modifies the message content to trigger the AI to use the generateImage tool
     const eventDisposable = events.on(
         'chat.message.willSend',
-        async (input, output) => {
-            const { content, threadId } = input;
+        (input, output) => {
+            const { content } = input;
             const parsed = parseImageCommand(content);
 
             if (!parsed.isImageCommand) {
                 return; // Not an image command, let it pass through
             }
 
-            // Cancel the original message
-            output.cancel = true;
-
-            const config = getSettings();
-
-            try {
-                // Show progress
-                await ui.withProgress(
-                    {
-                        title: '🎨 正在生成图片...',
-                        cancellable: false,
-                    },
-                    async (progress) => {
-                        progress.report({ message: '获取对话上下文...' });
-
-                        // Get conversation history
-                        const messages = await chat.getMessages(threadId);
-
-                        progress.report({ message: '构建提示词...' });
-
-                        // Build prompt from context
-                        const prompt = buildPromptFromContext(
-                            messages,
-                            parsed.userPrompt,
-                            config.maxContextMessages
-                        );
-
-                        logger.debug(`生成图片提示词: ${prompt.substring(0, 200)}...`);
-
-                        progress.report({ message: '调用 Gemini API...' });
-
-                        // Get API key
-                        const apiKey = await getApiKey();
-
-                        // Generate images
-                        const images = await generateImages({
-                            baseUrl: config.baseUrl,
-                            apiKey,
-                            model: config.model,
-                            prompt,
-                            size: config.imageSize,
-                            n: parsed.count,
-                            timeoutMs: config.timeoutMs,
-                        });
-
-                        progress.report({ message: '保存图片...' });
-
-                        // Save images
-                        const savedPaths = await saveImages(images, config.outputDir);
-
-                        // Format as markdown
-                        const markdown = formatAsMarkdown(savedPaths);
-
-                        // Show notification
-                        ui.showNotification(
-                            `✅ 成功生成 ${savedPaths.length} 张图片！`,
-                            { type: 'success' }
-                        );
-
-                        // Update the message content to show the result
-                        output.content = markdown;
-
-                        logger.info(`成功生成 ${savedPaths.length} 张图片`);
-                    }
-                );
-            } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : String(err);
-                logger.error(`图片生成失败: ${errorMessage}`);
-                ui.showError(`图片生成失败: ${errorMessage}`);
-
-                // Set error message as content
-                output.content = `❌ 图片生成失败: ${errorMessage}`;
+            // Transform /image command into a request for the AI to use the generateImage tool
+            let transformedContent = '请使用 generateImage 工具生成图片。';
+            
+            if (parsed.userPrompt) {
+                transformedContent += `\n\n图片描述：${parsed.userPrompt}`;
+            } else {
+                transformedContent += '\n\n请根据我们之前的对话内容，生成一张相关的图片。';
             }
-        }
+            
+            if (parsed.count > 1) {
+                transformedContent += `\n\n请生成 ${parsed.count} 张图片。`;
+            }
+
+            output.content = transformedContent;
+            logger.info(`Transformed /image command: ${transformedContent.substring(0, 100)}...`);
+        },
+        { priority: 100 } // High priority to run before other plugins
     );
 
     // Register command to set API key
