@@ -409,7 +409,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         'generate',
         async (args?: string) => {
             // Execute the image command
-            return await context.commands.execute('image', args);
+            return await context.commands.execute('gemini-image.image', args);
         }
     );
 
@@ -452,7 +452,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         'selectProvider',
         async (args?: string) => {
             // Execute the provider command
-            return await context.commands.execute('provider', args);
+            return await context.commands.execute('gemini-image.provider', args);
         }
     );
 
