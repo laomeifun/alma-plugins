@@ -299,41 +299,22 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             } = params as { prompt?: string; count?: number; includeContext?: boolean };
             const config = getSettings();
 
-            // Debug: show in notification for easier debugging
-            const debugInfo = `threadId: ${toolContext?.threadId || 'undefined'}`;
-            ui.showNotification(`🔍 Debug: ${debugInfo}`, { type: 'info' });
-
-            // Debug: log toolContext
-            logger.info(`toolContext: ${JSON.stringify(toolContext)}`);
-            logger.info(`params: ${JSON.stringify(params)}`);
-
             try {
                 let finalPrompt = prompt;
 
                 // Get conversation context if enabled
-                if (includeContext) {
-                    const threadId = toolContext?.threadId;
-                    logger.info(`threadId: ${threadId}`);
-                    
-                    if (threadId) {
-                        try {
-                            const messages = await chat.getMessages(threadId);
-                            logger.info(`获取到 ${messages.length} 条消息`);
-                            
-                            if (messages.length > 0) {
-                                const contextPrompt = buildPromptFromContext(
-                                    messages,
-                                    prompt,
-                                    config.maxContextMessages
-                                );
-                                finalPrompt = contextPrompt;
-                                logger.info(`上下文提示词: ${contextPrompt.substring(0, 300)}...`);
-                            }
-                        } catch (err) {
-                            logger.error(`获取消息失败: ${err}`);
+                if (includeContext && toolContext?.threadId) {
+                    try {
+                        const messages = await chat.getMessages(toolContext.threadId);
+                        if (messages.length > 0) {
+                            finalPrompt = buildPromptFromContext(
+                                messages,
+                                prompt,
+                                config.maxContextMessages
+                            );
                         }
-                    } else {
-                        logger.warn('没有 threadId，无法获取对话上下文');
+                    } catch (err) {
+                        logger.warn(`获取对话上下文失败: ${err}`);
                     }
                 }
 
@@ -341,8 +322,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 if (!finalPrompt.trim()) {
                     finalPrompt = '请生成一张有创意的图片';
                 }
-
-                logger.info(`生成图片提示词: ${finalPrompt.substring(0, 200)}...`);
 
                 const apiKey = await getApiKey();
 
