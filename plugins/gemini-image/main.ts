@@ -20,6 +20,7 @@ interface PluginSettings {
     outputDir: string;
     timeoutMs: number;
     maxContextMessages: number;
+    apiKey?: string;
 }
 
 /**
@@ -131,6 +132,52 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     logger.info('Gemini Image Generator plugin activated!');
 
+    // Storage key for persistent config backup
+    const CONFIG_STORAGE_KEY = 'gemini-image-config';
+
+    // Save config to local storage when settings change
+    const saveCurrentConfig = async (): Promise<void> => {
+        try {
+            const config = {
+                baseUrl: settings.get<string>('geminiImage.baseUrl', ''),
+                model: settings.get<string>('geminiImage.model', ''),
+                imageSize: settings.get<string>('geminiImage.imageSize', ''),
+                outputDir: settings.get<string>('geminiImage.outputDir', ''),
+                timeoutMs: settings.get<number>('geminiImage.timeoutMs', 0),
+                maxContextMessages: settings.get<number>('geminiImage.maxContextMessages', 0),
+            };
+            await storage.local.set(CONFIG_STORAGE_KEY, config);
+            logger.debug('配置已备份到本地存储');
+        } catch (err) {
+            logger.warn(`保存配置失败: ${err}`);
+        }
+    };
+
+    // Load saved config and apply as defaults if settings are empty
+    const initializeConfig = async (): Promise<void> => {
+        try {
+            const saved = await storage.local.get<Partial<PluginSettings>>(CONFIG_STORAGE_KEY);
+            if (saved) {
+                // If current settings are default/empty, restore from backup
+                if (!settings.get<string>('geminiImage.baseUrl') && saved.baseUrl) {
+                    await settings.update('geminiImage.baseUrl', saved.baseUrl);
+                }
+                if (!settings.get<string>('geminiImage.model') && saved.model) {
+                    await settings.update('geminiImage.model', saved.model);
+                }
+                if (!settings.get<string>('geminiImage.apiKey') && saved.apiKey) {
+                    await settings.update('geminiImage.apiKey', saved.apiKey);
+                }
+                logger.info('已从备份恢复配置');
+            }
+        } catch (err) {
+            logger.warn(`恢复配置失败: ${err}`);
+        }
+    };
+
+    // Initialize config on startup
+    await initializeConfig();
+
     // Get settings helper
     const getSettings = (): PluginSettings => ({
         baseUrl: settings.get<string>('geminiImage.baseUrl', 'http://127.0.0.1:8317'),
@@ -141,14 +188,21 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         maxContextMessages: settings.get<number>('geminiImage.maxContextMessages', 10),
     });
 
-    // Get API key from settings or secrets
+    // Watch for settings changes and save to local storage
+    const settingsChangeDisposable = settings.onDidChange(async (event) => {
+        if (event.key.startsWith('geminiImage.')) {
+            await saveCurrentConfig();
+        }
+    });
+
+    // Get API key from settings or secrets (secrets survive plugin updates)
     const getApiKey = async (): Promise<string | undefined> => {
         // First try settings
         const settingsKey = settings.get<string>('geminiImage.apiKey', '');
         if (settingsKey && settingsKey.trim()) {
             return settingsKey.trim();
         }
-        // Fall back to secrets
+        // Fall back to secrets (persistent)
         return await storage.secrets.get('geminiImage.apiKey');
     };
 
@@ -422,6 +476,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     return {
         dispose: () => {
             logger.info('Gemini Image Generator plugin deactivated');
+            settingsChangeDisposable.dispose();
             eventDisposable.dispose();
             generateImageCommand.dispose();
             setApiKeyCommand.dispose();
