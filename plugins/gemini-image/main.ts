@@ -303,15 +303,26 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 let finalPrompt = prompt;
 
                 // Get conversation context if enabled
-                if (includeContext && toolContext?.threadId) {
+                if (includeContext) {
                     try {
-                        const messages = await chat.getMessages(toolContext.threadId);
-                        if (messages.length > 0) {
-                            finalPrompt = buildPromptFromContext(
-                                messages,
-                                prompt,
-                                config.maxContextMessages
-                            );
+                        // Try to get threadId from toolContext, or use active thread
+                        let threadId = toolContext?.threadId;
+                        
+                        if (!threadId) {
+                            // Fallback: get active thread
+                            const activeThread = await chat.getActiveThread();
+                            threadId = activeThread?.id;
+                        }
+                        
+                        if (threadId) {
+                            const messages = await chat.getMessages(threadId);
+                            if (messages.length > 0) {
+                                finalPrompt = buildPromptFromContext(
+                                    messages,
+                                    prompt,
+                                    config.maxContextMessages
+                                );
+                            }
                         }
                     } catch (err) {
                         logger.warn(`获取对话上下文失败: ${err}`);
