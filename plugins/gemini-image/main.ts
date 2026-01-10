@@ -220,23 +220,15 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             type: 'object',
             properties: {
                 prompt: {
-                    oneOf: [
-                        { type: 'string' },
-                        { type: 'array', items: { type: 'string' } }
-                    ],
+                    type: 'string',
                     description: '图片描述（必填）。详细描述想要生成的图片内容，如："一只橙色的猫咪坐在窗台上，阳光透过窗户照进来，水彩画风格"',
                 },
                 size: {
-                    oneOf: [
-                        { type: 'string' },
-                        { type: 'number' }
-                    ],
-                    description: '图片尺寸。默认 1024x1024。可选：512x512、1024x1024、1024x1792（竖版）、1792x1024（横版）。传数字如 512 会自动变成 512x512',
+                    type: 'string',
+                    description: '图片尺寸。默认 1024x1024。可选：512x512、1024x1024、1024x1792（竖版）、1792x1024（横版）',
                 },
                 n: {
-                    type: 'integer',
-                    minimum: 1,
-                    maximum: 4,
+                    type: 'number',
                     description: '生成数量。默认 1，最多 4',
                 },
                 outDir: {
@@ -245,18 +237,13 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 },
             },
             required: ['prompt'],
-        } as const,
+        },
 
-        execute: async (params: { prompt: string | string[]; size?: string | number; n?: number; outDir?: string }) => {
+        execute: async (params: { prompt: string; size?: string; n?: number; outDir?: string }, _toolContext) => {
             const config = getSettings();
 
             // Parse prompt
-            let prompt = '';
-            if (Array.isArray(params.prompt)) {
-                prompt = params.prompt.join(' ').trim();
-            } else {
-                prompt = String(params.prompt ?? '').trim();
-            }
+            const prompt = String(params.prompt ?? '').trim();
 
             if (!prompt) {
                 return {
