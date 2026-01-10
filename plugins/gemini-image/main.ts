@@ -244,6 +244,85 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         { priority: 100 }
     );
 
+    // Register command to generate image (can be triggered from command palette)
+    const generateImageCommand = context.commands.register(
+        'generate',
+        async () => {
+            const config = getSettings();
+            
+            // Ask user for prompt
+            const userPrompt = await ui.showInputBox({
+                title: '生成图片',
+                prompt: '请输入图片描述（留空则根据当前对话生成）',
+                placeholder: '例如：一只橘猫在阳光下睡觉',
+            });
+
+            // User cancelled
+            if (userPrompt === undefined) {
+                return;
+            }
+
+            try {
+                await ui.withProgress(
+                    { title: '🎨 正在生成图片...', cancellable: false },
+                    async (progress) => {
+                        progress.report({ message: '获取对话上下文...' });
+
+                        let finalPrompt = userPrompt;
+
+                        // If no prompt provided, try to get context from active thread
+                        if (!finalPrompt.trim()) {
+                            try {
+                                const activeThread = await chat.getActiveThread();
+                                if (activeThread?.id) {
+                                    const messages = await chat.getMessages(activeThread.id);
+                                    if (messages.length > 0) {
+                                        finalPrompt = buildPromptFromContext(
+                                            messages,
+                                            '',
+                                            config.maxContextMessages
+                                        );
+                                    }
+                                }
+                            } catch (err) {
+                                logger.warn(`获取对话上下文失败: ${err}`);
+                            }
+                        }
+
+                        if (!finalPrompt.trim()) {
+                            finalPrompt = '请生成一张有创意的图片';
+                        }
+
+                        progress.report({ message: '调用 Gemini API...' });
+
+                        const apiKey = await getApiKey();
+                        const images = await generateImages({
+                            baseUrl: config.baseUrl,
+                            apiKey,
+                            model: config.model,
+                            prompt: finalPrompt,
+                            size: config.imageSize,
+                            n: 1,
+                            timeoutMs: config.timeoutMs,
+                        });
+
+                        progress.report({ message: '保存图片...' });
+
+                        const savedPaths = await saveImages(images, config.outputDir);
+                        
+                        ui.showNotification(
+                            `✅ 图片已保存: ${savedPaths[0]}`,
+                            { type: 'success' }
+                        );
+                    }
+                );
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                ui.showError(`图片生成失败: ${errorMessage}`);
+            }
+        }
+    );
+
     // Register command to set API key
     const setApiKeyCommand = context.commands.register(
         'setApiKey',
@@ -344,6 +423,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         dispose: () => {
             logger.info('Gemini Image Generator plugin deactivated');
             eventDisposable.dispose();
+            generateImageCommand.dispose();
             setApiKeyCommand.dispose();
             clearApiKeyCommand.dispose();
             toolDisposable.dispose();

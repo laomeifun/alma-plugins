@@ -24,6 +24,11 @@
         ],
         "commands": [
             {
+                "id": "gemini-image.generate",
+                "title": "Generate Image",
+                "category": "Gemini Image"
+            },
+            {
                 "id": "gemini-image.setApiKey",
                 "title": "Set API Key",
                 "category": "Gemini Image"
