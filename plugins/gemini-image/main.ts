@@ -1,5 +1,4 @@
 import type { PluginContext, PluginActivation } from 'alma-plugin-api';
-import { z } from 'zod';
 import { generateImages, extFromMime, type GeneratedImage } from './lib/gemini-api';
 
 /**
@@ -217,23 +216,38 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
 提示词技巧：prompt 越详细效果越好，建议包含：主体、风格、颜色、构图、光线等`,
 
-        parameters: z.object({
-            prompt: z.union([
-                z.string(),
-                z.array(z.string())
-            ]).describe('图片描述（必填）。详细描述想要生成的图片内容，如："一只橙色的猫咪坐在窗台上，阳光透过窗户照进来，水彩画风格"'),
-            
-            size: z.union([
-                z.string(),
-                z.number()
-            ]).optional().describe('图片尺寸。默认 1024x1024。可选：512x512、1024x1024、1024x1792（竖版）、1792x1024（横版）。传数字如 512 会自动变成 512x512'),
-            
-            n: z.number().int().min(1).max(4).optional().describe('生成数量。默认 1，最多 4'),
-            
-            outDir: z.string().optional().describe('保存目录（相对于工作区）。默认使用插件设置的目录'),
-        }),
+        parameters: {
+            type: 'object',
+            properties: {
+                prompt: {
+                    oneOf: [
+                        { type: 'string' },
+                        { type: 'array', items: { type: 'string' } }
+                    ],
+                    description: '图片描述（必填）。详细描述想要生成的图片内容，如："一只橙色的猫咪坐在窗台上，阳光透过窗户照进来，水彩画风格"',
+                },
+                size: {
+                    oneOf: [
+                        { type: 'string' },
+                        { type: 'number' }
+                    ],
+                    description: '图片尺寸。默认 1024x1024。可选：512x512、1024x1024、1024x1792（竖版）、1792x1024（横版）。传数字如 512 会自动变成 512x512',
+                },
+                n: {
+                    type: 'integer',
+                    minimum: 1,
+                    maximum: 4,
+                    description: '生成数量。默认 1，最多 4',
+                },
+                outDir: {
+                    type: 'string',
+                    description: '保存目录（相对于工作区）。默认使用插件设置的目录',
+                },
+            },
+            required: ['prompt'],
+        } as const,
 
-        execute: async (params) => {
+        execute: async (params: { prompt: string | string[]; size?: string | number; n?: number; outDir?: string }) => {
             const config = getSettings();
 
             // Parse prompt
