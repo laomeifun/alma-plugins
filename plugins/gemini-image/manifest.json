@@ -3,13 +3,37 @@
     "name": "Gemini Image Generator",
     "version": "1.0.0",
     "description": "Generate images from conversation context using Gemini's image generation model. Use /image command to trigger.",
-    "author": "Alma Plugins",
-    "main": "main.ts",
-    "engines": {
-        "alma": ">=1.0.0"
+    "author": {
+        "name": "Alma Plugins",
+        "email": "hello@alma.now"
     },
-    "activationEvents": ["*"],
+    "main": "main.js",
+    "engines": {
+        "alma": "^0.1.0"
+    },
+    "type": "tool",
+    "permissions": ["notifications", "tools:register", "storage", "secrets", "chat:read", "workspace:write"],
+    "activationEvents": ["onStartup"],
     "contributes": {
+        "tools": [
+            {
+                "id": "gemini-image.generateImage",
+                "name": "Generate Image",
+                "description": "Generate images from text description using Gemini"
+            }
+        ],
+        "commands": [
+            {
+                "id": "gemini-image.setApiKey",
+                "title": "Set API Key",
+                "category": "Gemini Image"
+            },
+            {
+                "id": "gemini-image.clearApiKey",
+                "title": "Clear API Key",
+                "category": "Gemini Image"
+            }
+        ],
         "settings": {
             "geminiImage.baseUrl": {
                 "type": "string",
