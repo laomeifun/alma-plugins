@@ -29,6 +29,11 @@
                 "category": "Gemini Image"
             },
             {
+                "id": "gemini-image.selectProvider",
+                "title": "Select Provider",
+                "category": "Gemini Image"
+            },
+            {
                 "id": "gemini-image.setApiKey",
                 "title": "Set API Key",
                 "category": "Gemini Image"
@@ -42,10 +47,15 @@
         "configuration": {
             "title": "Gemini Image Generator",
             "properties": {
+                "geminiImage.providerId": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Selected provider ID (use 'Select Provider' command to choose)"
+                },
                 "geminiImage.baseUrl": {
                     "type": "string",
                     "default": "http://127.0.0.1:8317",
-                    "description": "Base URL for the Gemini API proxy"
+                    "description": "Base URL for the Gemini API proxy (used when no provider is selected)"
                 },
                 "geminiImage.apiKey": {
                     "type": "string",

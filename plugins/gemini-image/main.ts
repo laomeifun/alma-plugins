@@ -14,6 +14,7 @@ import { generateImages, extFromMime, type GeneratedImage } from './lib/gemini-a
  */
 
 interface PluginSettings {
+    providerId?: string;
     baseUrl: string;
     model: string;
     imageSize: string;
@@ -128,7 +129,7 @@ function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 export async function activate(context: PluginContext): Promise<PluginActivation> {
-    const { logger, events, settings, chat, workspace, ui, storage } = context;
+    const { logger, events, settings, chat, workspace, ui, storage, providers } = context;
 
     logger.info('Gemini Image Generator plugin activated!');
 
@@ -180,6 +181,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
 
     // Get settings helper
     const getSettings = (): PluginSettings => ({
+        providerId: settings.get<string>('geminiImage.providerId', ''),
         baseUrl: settings.get<string>('geminiImage.baseUrl', 'http://127.0.0.1:8317'),
         model: settings.get<string>('geminiImage.model', 'gemini-3-pro-image-preview'),
         imageSize: settings.get<string>('geminiImage.imageSize', '1024x1024'),
@@ -411,6 +413,65 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         }
     );
 
+    // Register command to select provider
+    const selectProviderCommand = context.commands.register(
+        'selectProvider',
+        async () => {
+            try {
+                // Get list of available providers
+                const providerList = await providers.list();
+                
+                if (providerList.length === 0) {
+                    ui.showWarning('没有可用的供应商');
+                    return;
+                }
+
+                // Filter enabled providers
+                const enabledProviders = providerList.filter(p => p.enabled);
+                
+                if (enabledProviders.length === 0) {
+                    ui.showWarning('没有已启用的供应商');
+                    return;
+                }
+
+                // Show quick pick to select provider
+                const items = enabledProviders.map(p => ({
+                    label: p.name,
+                    description: `ID: ${p.id} | Type: ${p.type}`,
+                    value: p.id,
+                }));
+
+                const selectedProviderId = await ui.showQuickPick(items, {
+                    title: '选择图片生成供应商',
+                    placeholder: '选择一个供应商...',
+                });
+
+                if (!selectedProviderId) {
+                    return; // User cancelled
+                }
+
+                // Get the selected provider
+                const selectedProvider = await providers.get(selectedProviderId);
+                
+                if (!selectedProvider) {
+                    ui.showError('无法获取供应商信息');
+                    return;
+                }
+
+                // Save the selected provider ID
+                await storage.local.set('gemini-image-provider', selectedProviderId);
+                await settings.update('geminiImage.providerId', selectedProviderId);
+                
+                ui.showNotification(`已选择供应商: ${selectedProvider.name}`, { type: 'success' });
+                logger.info(`Selected provider: ${selectedProviderId}`);
+
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                ui.showError(`选择供应商失败: ${errorMessage}`);
+            }
+        }
+    );
+
     // Register a tool for AI to generate images
     // The AI is responsible for providing a detailed prompt based on conversation context
     const toolDisposable = context.tools.register('generateImage', {
@@ -479,6 +540,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             settingsChangeDisposable.dispose();
             eventDisposable.dispose();
             generateImageCommand.dispose();
+            selectProviderCommand.dispose();
             setApiKeyCommand.dispose();
             clearApiKeyCommand.dispose();
             toolDisposable.dispose();
