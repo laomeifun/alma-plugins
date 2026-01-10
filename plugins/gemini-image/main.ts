@@ -299,19 +299,38 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             } = params as { prompt?: string; count?: number; includeContext?: boolean };
             const config = getSettings();
 
+            // Debug: log toolContext
+            logger.info(`toolContext: ${JSON.stringify(toolContext)}`);
+            logger.info(`params: ${JSON.stringify(params)}`);
+
             try {
                 let finalPrompt = prompt;
 
                 // Get conversation context if enabled
-                if (includeContext && toolContext.threadId) {
-                    const messages = await chat.getMessages(toolContext.threadId);
-                    const contextPrompt = buildPromptFromContext(
-                        messages,
-                        prompt,
-                        config.maxContextMessages
-                    );
-                    finalPrompt = contextPrompt;
-                    logger.debug(`使用对话上下文生成图片，上下文长度: ${messages.length} 条消息`);
+                if (includeContext) {
+                    const threadId = toolContext?.threadId;
+                    logger.info(`threadId: ${threadId}`);
+                    
+                    if (threadId) {
+                        try {
+                            const messages = await chat.getMessages(threadId);
+                            logger.info(`获取到 ${messages.length} 条消息`);
+                            
+                            if (messages.length > 0) {
+                                const contextPrompt = buildPromptFromContext(
+                                    messages,
+                                    prompt,
+                                    config.maxContextMessages
+                                );
+                                finalPrompt = contextPrompt;
+                                logger.info(`上下文提示词: ${contextPrompt.substring(0, 300)}...`);
+                            }
+                        } catch (err) {
+                            logger.error(`获取消息失败: ${err}`);
+                        }
+                    } else {
+                        logger.warn('没有 threadId，无法获取对话上下文');
+                    }
                 }
 
                 // If still no prompt, use a default
