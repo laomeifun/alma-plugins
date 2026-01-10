@@ -259,119 +259,149 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         return lines.join('\n');
     };
 
-    // Helper function to handle /provider command
-    const handleProviderCommand = async (): Promise<string> => {
-        try {
-            // Get list of available providers
-            const providerList = await providers.list();
+    // Register /image command
+    const imageCommand = context.commands.register(
+        'image',
+        async (args?: string) => {
+            const config = getSettings();
+            const userPrompt = args?.trim() || '';
             
-            if (providerList.length === 0) {
-                return '❌ 没有可用的供应商';
+            // Parse -n option for count
+            let count = 1;
+            let prompt = userPrompt;
+            const countMatch = userPrompt.match(/^-n\s+(\d+)\s*/);
+            if (countMatch) {
+                count = Math.max(1, Math.min(4, parseInt(countMatch[1], 10)));
+                prompt = userPrompt.slice(countMatch[0].length).trim();
             }
 
-            // Filter enabled providers
-            const enabledProviders = providerList.filter((p: { enabled: boolean }) => p.enabled);
-            
-            if (enabledProviders.length === 0) {
-                return '❌ 没有已启用的供应商';
-            }
+            try {
+                await ui.withProgress(
+                    { title: '🎨 正在生成图片...', cancellable: false },
+                    async (progress) => {
+                        progress.report({ message: '获取对话上下文...' });
 
-            // Build provider list message
-            const currentProviderId = settings.get<string>('geminiImage.providerId', '');
-            let message = '## 📋 可用的供应商\n\n';
-            message += '请回复供应商的 **编号** 来选择：\n\n';
-            
-            enabledProviders.forEach((p: { id: string; name: string; type: string }, index: number) => {
-                const isCurrent = p.id === currentProviderId;
-                const marker = isCurrent ? ' ✅ (当前)' : '';
-                message += `**${index + 1}.** ${p.name} (${p.id})${marker}\n`;
-            });
+                        let finalPrompt = prompt;
 
-            message += '\n---\n';
-            message += `当前配置：\n`;
-            message += `- 供应商: ${currentProviderId || '未选择'}\n`;
-            message += `- Base URL: ${settings.get<string>('geminiImage.baseUrl', 'http://127.0.0.1:8317')}\n`;
-            message += `- 模型: ${settings.get<string>('geminiImage.model', 'gemini-3-pro-image-preview')}\n`;
-
-            // Store provider list for later selection
-            await storage.local.set('gemini-image-provider-list', enabledProviders.map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
-
-            return message;
-        } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : String(err);
-            return `❌ 获取供应商列表失败: ${errorMessage}`;
-        }
-    };
-
-    // Main hook to intercept /image and /provider commands
-    const eventDisposable = events.on(
-        'chat.message.willSend',
-        async (input, output) => {
-            const { content } = input;
-            const trimmedContent = content.trim();
-
-            // Handle /provider command
-            if (trimmedContent === '/provider' || trimmedContent.startsWith('/provider ')) {
-                output.cancel = true;
-                
-                // Check if user is selecting a provider by number
-                const selectMatch = trimmedContent.match(/^\/provider\s+(\d+)$/);
-                if (selectMatch) {
-                    const index = parseInt(selectMatch[1], 10) - 1;
-                    try {
-                        const savedList = await storage.local.get<Array<{ id: string; name: string }>>('gemini-image-provider-list');
-                        if (savedList && index >= 0 && index < savedList.length) {
-                            const selected = savedList[index];
-                            await settings.update('geminiImage.providerId', selected.id);
-                            output.content = `✅ 已选择供应商: **${selected.name}** (${selected.id})`;
-                            ui.showNotification(`已选择供应商: ${selected.name}`, { type: 'success' });
-                        } else {
-                            output.content = '❌ 无效的编号，请先使用 `/provider` 查看可用供应商列表';
+                        // If no prompt provided, try to get context from active thread
+                        if (!finalPrompt.trim()) {
+                            try {
+                                const activeThread = await chat.getActiveThread();
+                                if (activeThread?.id) {
+                                    const messages = await chat.getMessages(activeThread.id);
+                                    if (messages.length > 0) {
+                                        finalPrompt = buildPromptFromContext(
+                                            messages,
+                                            '',
+                                            config.maxContextMessages
+                                        );
+                                    }
+                                }
+                            } catch (err) {
+                                logger.warn(`获取对话上下文失败: ${err}`);
+                            }
                         }
-                    } catch (err) {
-                        output.content = `❌ 选择供应商失败: ${err}`;
+
+                        if (!finalPrompt.trim()) {
+                            finalPrompt = '请生成一张有创意的图片';
+                        }
+
+                        progress.report({ message: '调用 Gemini API...' });
+
+                        const apiKey = await getApiKey();
+                        const images = await generateImages({
+                            baseUrl: config.baseUrl,
+                            apiKey,
+                            model: config.model,
+                            prompt: finalPrompt,
+                            size: config.imageSize,
+                            n: count,
+                            timeoutMs: config.timeoutMs,
+                        });
+
+                        progress.report({ message: '保存图片...' });
+
+                        const savedPaths = await saveImages(images, config.outputDir);
+                        const markdown = formatAsMarkdown(savedPaths);
+                        
+                        ui.showNotification(
+                            `✅ 成功生成 ${savedPaths.length} 张图片！`,
+                            { type: 'success' }
+                        );
+
+                        // Return markdown for display
+                        return markdown;
                     }
-                } else {
-                    // Show provider list
-                    output.content = await handleProviderCommand();
+                );
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                ui.showError(`图片生成失败: ${errorMessage}`);
+            }
+        }
+    );
+
+    // Register /provider command
+    const providerCommand = context.commands.register(
+        'provider',
+        async (args?: string) => {
+            // Check if user is selecting a provider by number
+            if (args && /^\d+$/.test(args.trim())) {
+                const index = parseInt(args.trim(), 10) - 1;
+                try {
+                    const savedList = await storage.local.get<Array<{ id: string; name: string }>>('gemini-image-provider-list');
+                    if (savedList && index >= 0 && index < savedList.length) {
+                        const selected = savedList[index];
+                        await settings.update('geminiImage.providerId', selected.id);
+                        ui.showNotification(`已选择供应商: ${selected.name}`, { type: 'success' });
+                        return `✅ 已选择供应商: **${selected.name}** (${selected.id})`;
+                    } else {
+                        ui.showWarning('无效的编号，请先使用 /provider 查看可用供应商列表');
+                        return '❌ 无效的编号';
+                    }
+                } catch (err) {
+                    ui.showError(`选择供应商失败: ${err}`);
+                    return `❌ 选择供应商失败: ${err}`;
                 }
-                return;
             }
 
-            // Handle /image command
-            const parsed = parseImageCommand(content);
+            // Show provider list
+            try {
+                const providerList = await providers.list();
+                
+                if (providerList.length === 0) {
+                    return '❌ 没有可用的供应商';
+                }
 
-            if (!parsed.isImageCommand) {
-                return; // Not a recognized command, let it pass through
+                const enabledProviders = providerList.filter((p: { enabled: boolean }) => p.enabled);
+                
+                if (enabledProviders.length === 0) {
+                    return '❌ 没有已启用的供应商';
+                }
+
+                const currentProviderId = settings.get<string>('geminiImage.providerId', '');
+                let message = '## 📋 可用的供应商\n\n';
+                message += '使用 `/provider <编号>` 来选择：\n\n';
+                
+                enabledProviders.forEach((p: { id: string; name: string; type: string }, index: number) => {
+                    const isCurrent = p.id === currentProviderId;
+                    const marker = isCurrent ? ' ✅ (当前)' : '';
+                    message += `**${index + 1}.** ${p.name} (${p.id})${marker}\n`;
+                });
+
+                message += '\n---\n';
+                message += `当前配置：\n`;
+                message += `- 供应商: ${currentProviderId || '未选择'}\n`;
+                message += `- Base URL: ${settings.get<string>('geminiImage.baseUrl', 'http://127.0.0.1:8317')}\n`;
+                message += `- 模型: ${settings.get<string>('geminiImage.model', 'gemini-3-pro-image-preview')}\n`;
+
+                await storage.local.set('gemini-image-provider-list', enabledProviders.map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
+
+                return message;
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                return `❌ 获取供应商列表失败: ${errorMessage}`;
             }
-
-            // Transform /image command - ask AI to summarize context and generate image
-            let transformedContent = `请使用 generateImage 工具生成图片。
-
-**重要**：在调用工具时，你需要在 prompt 参数中提供详细的图片描述。`;
-            
-            if (parsed.userPrompt) {
-                transformedContent += `
-
-用户指定的图片内容：${parsed.userPrompt}
-
-请结合我们之前的对话上下文，生成一个详细的图片描述（包括风格、场景、细节等），然后调用 generateImage 工具。`;
-            } else {
-                transformedContent += `
-
-请仔细回顾我们之前的对话内容，总结出一个适合生成图片的详细描述（包括主题、风格、场景、颜色、细节等），然后调用 generateImage 工具生成相关图片。`;
-            }
-            
-            if (parsed.count > 1) {
-                transformedContent += `
-
-请生成 ${parsed.count} 张图片（设置 count 参数为 ${parsed.count}）。`;
-            }
-
-            output.content = transformedContent;
-            logger.info(`Transformed /image command`);
-        },
-        { priority: 100 }
+        }
     );
 
     // Register command to generate image (can be triggered from command palette)
@@ -612,7 +642,8 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         dispose: () => {
             logger.info('Gemini Image Generator plugin deactivated');
             settingsChangeDisposable.dispose();
-            eventDisposable.dispose();
+            imageCommand.dispose();
+            providerCommand.dispose();
             generateImageCommand.dispose();
             selectProviderCommand.dispose();
             setApiKeyCommand.dispose();

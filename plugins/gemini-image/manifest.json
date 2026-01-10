@@ -24,13 +24,23 @@
         ],
         "commands": [
             {
+                "id": "gemini-image.image",
+                "title": "Generate Image from Context",
+                "category": "Gemini Image"
+            },
+            {
+                "id": "gemini-image.provider",
+                "title": "Select/View Providers",
+                "category": "Gemini Image"
+            },
+            {
                 "id": "gemini-image.generate",
-                "title": "Generate Image",
+                "title": "Generate Image (Dialog)",
                 "category": "Gemini Image"
             },
             {
                 "id": "gemini-image.selectProvider",
-                "title": "Select Provider",
+                "title": "Select Provider (Dialog)",
                 "category": "Gemini Image"
             },
             {
