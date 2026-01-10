@@ -141,8 +141,14 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         maxContextMessages: settings.get<number>('geminiImage.maxContextMessages', 10),
     });
 
-    // Get API key from secrets
+    // Get API key from settings or secrets
     const getApiKey = async (): Promise<string | undefined> => {
+        // First try settings
+        const settingsKey = settings.get<string>('geminiImage.apiKey', '');
+        if (settingsKey && settingsKey.trim()) {
+            return settingsKey.trim();
+        }
+        // Fall back to secrets
         return await storage.secrets.get('geminiImage.apiKey');
     };
 

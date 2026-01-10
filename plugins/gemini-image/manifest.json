@@ -42,6 +42,11 @@
                     "default": "http://127.0.0.1:8317",
                     "description": "Base URL for the Gemini API proxy"
                 },
+                "geminiImage.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "API Key for Gemini API (leave empty if using proxy without auth)"
+                },
                 "geminiImage.model": {
                     "type": "string",
                     "default": "gemini-3-pro-image-preview",
