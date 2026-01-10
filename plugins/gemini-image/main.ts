@@ -259,16 +259,90 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         return lines.join('\n');
     };
 
-    // Main hook to intercept /image commands
-    // Transform the command into a detailed request for AI to generate image description
+    // Helper function to handle /provider command
+    const handleProviderCommand = async (): Promise<string> => {
+        try {
+            // Get list of available providers
+            const providerList = await providers.list();
+            
+            if (providerList.length === 0) {
+                return '❌ 没有可用的供应商';
+            }
+
+            // Filter enabled providers
+            const enabledProviders = providerList.filter((p: { enabled: boolean }) => p.enabled);
+            
+            if (enabledProviders.length === 0) {
+                return '❌ 没有已启用的供应商';
+            }
+
+            // Build provider list message
+            const currentProviderId = settings.get<string>('geminiImage.providerId', '');
+            let message = '## 📋 可用的供应商\n\n';
+            message += '请回复供应商的 **编号** 来选择：\n\n';
+            
+            enabledProviders.forEach((p: { id: string; name: string; type: string }, index: number) => {
+                const isCurrent = p.id === currentProviderId;
+                const marker = isCurrent ? ' ✅ (当前)' : '';
+                message += `**${index + 1}.** ${p.name} (${p.id})${marker}\n`;
+            });
+
+            message += '\n---\n';
+            message += `当前配置：\n`;
+            message += `- 供应商: ${currentProviderId || '未选择'}\n`;
+            message += `- Base URL: ${settings.get<string>('geminiImage.baseUrl', 'http://127.0.0.1:8317')}\n`;
+            message += `- 模型: ${settings.get<string>('geminiImage.model', 'gemini-3-pro-image-preview')}\n`;
+
+            // Store provider list for later selection
+            await storage.local.set('gemini-image-provider-list', enabledProviders.map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
+
+            return message;
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            return `❌ 获取供应商列表失败: ${errorMessage}`;
+        }
+    };
+
+    // Main hook to intercept /image and /provider commands
     const eventDisposable = events.on(
         'chat.message.willSend',
-        (input, output) => {
+        async (input, output) => {
             const { content } = input;
+            const trimmedContent = content.trim();
+
+            // Handle /provider command
+            if (trimmedContent === '/provider' || trimmedContent.startsWith('/provider ')) {
+                output.cancel = true;
+                
+                // Check if user is selecting a provider by number
+                const selectMatch = trimmedContent.match(/^\/provider\s+(\d+)$/);
+                if (selectMatch) {
+                    const index = parseInt(selectMatch[1], 10) - 1;
+                    try {
+                        const savedList = await storage.local.get<Array<{ id: string; name: string }>>('gemini-image-provider-list');
+                        if (savedList && index >= 0 && index < savedList.length) {
+                            const selected = savedList[index];
+                            await settings.update('geminiImage.providerId', selected.id);
+                            output.content = `✅ 已选择供应商: **${selected.name}** (${selected.id})`;
+                            ui.showNotification(`已选择供应商: ${selected.name}`, { type: 'success' });
+                        } else {
+                            output.content = '❌ 无效的编号，请先使用 `/provider` 查看可用供应商列表';
+                        }
+                    } catch (err) {
+                        output.content = `❌ 选择供应商失败: ${err}`;
+                    }
+                } else {
+                    // Show provider list
+                    output.content = await handleProviderCommand();
+                }
+                return;
+            }
+
+            // Handle /image command
             const parsed = parseImageCommand(content);
 
             if (!parsed.isImageCommand) {
-                return; // Not an image command, let it pass through
+                return; // Not a recognized command, let it pass through
             }
 
             // Transform /image command - ask AI to summarize context and generate image
