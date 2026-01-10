@@ -299,6 +299,10 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             } = params as { prompt?: string; count?: number; includeContext?: boolean };
             const config = getSettings();
 
+            // Debug: show in notification for easier debugging
+            const debugInfo = `threadId: ${toolContext?.threadId || 'undefined'}`;
+            ui.showNotification(`🔍 Debug: ${debugInfo}`, { type: 'info' });
+
             // Debug: log toolContext
             logger.info(`toolContext: ${JSON.stringify(toolContext)}`);
             logger.info(`params: ${JSON.stringify(params)}`);
