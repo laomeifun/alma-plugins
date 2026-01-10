@@ -79,7 +79,7 @@ function normalizeSize(size: string | number | undefined, defaultSize: string): 
 // ============================================================================
 
 export async function activate(context: PluginContext): Promise<PluginActivation> {
-    const { logger, settings, workspace, ui, storage } = context;
+    const { logger, settings, workspace, ui, storage, tools, commands } = context;
 
     logger.info('Gemini Image Generator plugin activated');
 
@@ -165,7 +165,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     // ========================================================================
 
     // Set API Key command
-    const setApiKeyCommand = context.commands.register(
+    const setApiKeyCommand = commands.register(
         'setApiKey',
         async () => {
             const apiKey = await ui.showInputBox({
@@ -183,7 +183,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     );
 
     // Clear API Key command
-    const clearApiKeyCommand = context.commands.register(
+    const clearApiKeyCommand = commands.register(
         'clearApiKey',
         async () => {
             const confirmed = await ui.showConfirmDialog(
@@ -202,7 +202,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     // Tool Registration
     // ========================================================================
 
-    const toolDisposable = context.tools.register('generate_image', {
+    const toolDisposable = tools.register('generate_image', {
         description: `生成 AI 图片。当用户需要创建、绘制、生成图片/图像/插图/照片时使用此工具。
 
 使用场景：
