@@ -1,8 +1,13 @@
 /**
  * Gemini Image Generator - API Client
  *
- * Handles communication with the Gemini image generation API.
+ * Handles communication with OpenAI-compatible image generation APIs.
+ * Supports both /images/generations and /chat/completions endpoints.
  */
+
+// ============================================================================
+// Types
+// ============================================================================
 
 export interface ImageGenerationOptions {
     baseUrl: string;
@@ -12,12 +17,17 @@ export interface ImageGenerationOptions {
     size: string;
     n: number;
     timeoutMs: number;
+    mode?: 'auto' | 'images' | 'chat';
 }
 
 export interface GeneratedImage {
     base64: string;
     mimeType: string;
 }
+
+// ============================================================================
+// Utilities
+// ============================================================================
 
 /**
  * Normalize base URL by removing trailing slashes
@@ -77,6 +87,14 @@ function stripDataUrlPrefix(maybeDataUrl: string): string {
 }
 
 /**
+ * Clamp integer value between min and max
+ */
+function clampInt(value: number, min: number, max: number): number {
+    const n = Number.isFinite(value) ? value : min;
+    return Math.max(min, Math.min(max, n));
+}
+
+/**
  * Fetch with timeout support
  */
 async function fetchWithTimeout(
@@ -87,8 +105,7 @@ async function fetchWithTimeout(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const res = await fetch(url, { ...init, signal: controller.signal });
-        return res;
+        return await fetch(url, { ...init, signal: controller.signal });
     } catch (err: unknown) {
         if (err instanceof Error && err.name === 'AbortError') {
             throw new Error(`请求超时（${Math.round(timeoutMs / 1000)}秒）`);
@@ -130,8 +147,75 @@ async function fetchUrlAsBase64(
     return { base64, mimeType };
 }
 
+// ============================================================================
+// API Implementations
+// ============================================================================
+
 /**
- * Generate images via chat/completions API
+ * Generate images via /images/generations API (OpenAI-compatible)
+ */
+async function generateImagesViaImagesApi(
+    options: ImageGenerationOptions
+): Promise<GeneratedImage[]> {
+    const { baseUrl, apiKey, model, prompt, size, n, timeoutMs } = options;
+    const v1BaseUrl = toV1BaseUrl(baseUrl);
+    const url = `${v1BaseUrl}/images/generations`;
+
+    const headers: Record<string, string> = {
+        'content-type': 'application/json',
+    };
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+
+    const body = {
+        model,
+        prompt,
+        size,
+        n,
+        response_format: 'b64_json',
+    };
+
+    const res = await fetchWithTimeout(
+        url,
+        { method: 'POST', headers, body: JSON.stringify(body) },
+        timeoutMs
+    );
+
+    if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        const hint = res.status === 401 ? '（需要 API Key）' : '';
+        const error = new Error(`图片生成失败: HTTP ${res.status}${hint} ${text}`);
+        (error as Error & { status?: number }).status = res.status;
+        throw error;
+    }
+
+    interface ImagesResponse {
+        data?: Array<{ b64_json?: string; url?: string }>;
+    }
+
+    const json: ImagesResponse = await res.json();
+    const data = Array.isArray(json?.data) ? json.data : [];
+
+    const images: GeneratedImage[] = [];
+    for (const item of data) {
+        if (typeof item?.b64_json === 'string' && item.b64_json.trim()) {
+            const parsed = parseDataUrl(item.b64_json);
+            images.push({
+                base64: stripDataUrlPrefix(item.b64_json),
+                mimeType: parsed?.mimeType ?? 'image/png',
+            });
+            continue;
+        }
+        if (typeof item?.url === 'string' && item.url.trim()) {
+            images.push(await fetchUrlAsBase64(item.url, timeoutMs));
+        }
+    }
+
+    if (images.length === 0) throw new Error('接口未返回可用的图片数据');
+    return images;
+}
+
+/**
+ * Generate images via /chat/completions API (Gemini-style)
  */
 async function generateImagesViaChatCompletions(
     options: ImageGenerationOptions
@@ -164,7 +248,9 @@ async function generateImagesViaChatCompletions(
     if (!res.ok) {
         const text = await res.text().catch(() => '');
         const hint = res.status === 401 ? '（需要 API Key）' : '';
-        throw new Error(`图片生成失败: HTTP ${res.status}${hint} ${text}`);
+        const error = new Error(`图片生成失败: HTTP ${res.status}${hint} ${text}`);
+        (error as Error & { status?: number }).status = res.status;
+        throw error;
     }
 
     interface ChatCompletionResponse {
@@ -202,88 +288,55 @@ async function generateImagesViaChatCompletions(
     }
 
     if (images.length === 0) {
-        throw new Error('接口未返回可用的图片数据');
+        throw new Error('接口未返回可用的图片数据（chat/completions 未找到 choices[].message.images）');
     }
 
     return images;
 }
 
-/**
- * Generate images via images/generations API
- */
-async function generateImagesViaImagesApi(
-    options: ImageGenerationOptions
-): Promise<GeneratedImage[]> {
-    const { baseUrl, apiKey, model, prompt, size, n, timeoutMs } = options;
-    const v1BaseUrl = toV1BaseUrl(baseUrl);
-    const url = `${v1BaseUrl}/images/generations`;
-
-    const headers: Record<string, string> = {
-        'content-type': 'application/json',
-    };
-    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-
-    const body = {
-        model,
-        prompt,
-        size,
-        n,
-        response_format: 'b64_json',
-    };
-
-    const res = await fetchWithTimeout(
-        url,
-        { method: 'POST', headers, body: JSON.stringify(body) },
-        timeoutMs
-    );
-
-    if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        const hint = res.status === 401 ? '（需要 API Key）' : '';
-        throw new Error(`图片生成失败: HTTP ${res.status}${hint} ${text}`);
-    }
-
-    interface ImagesResponse {
-        data?: Array<{ b64_json?: string; url?: string }>;
-    }
-
-    const json: ImagesResponse = await res.json();
-    const data = Array.isArray(json?.data) ? json.data : [];
-
-    const images: GeneratedImage[] = [];
-    for (const item of data) {
-        if (typeof item?.b64_json === 'string' && item.b64_json.trim()) {
-            const parsed = parseDataUrl(item.b64_json);
-            images.push({
-                base64: stripDataUrlPrefix(item.b64_json),
-                mimeType: parsed?.mimeType ?? 'image/png',
-            });
-            continue;
-        }
-        if (typeof item?.url === 'string' && item.url.trim()) {
-            images.push(await fetchUrlAsBase64(item.url, timeoutMs));
-        }
-    }
-
-    if (images.length === 0) throw new Error('接口未返回可用的图片数据');
-    return images;
-}
+// ============================================================================
+// Main Export
+// ============================================================================
 
 /**
- * Main function to generate images
- * Tries images/generations API first, falls back to chat/completions
+ * Generate images using the specified mode
+ *
+ * @param options - Image generation options
+ * @returns Array of generated images with base64 data and MIME type
+ *
+ * Modes:
+ * - 'images': Use /images/generations API only
+ * - 'chat': Use /chat/completions API only
+ * - 'auto' (default): Try /images/generations first, fallback to /chat/completions on 404
  */
 export async function generateImages(
     options: ImageGenerationOptions
 ): Promise<GeneratedImage[]> {
-    const count = Math.max(1, Math.min(4, options.n));
+    const mode = options.mode ?? 'auto';
+    const count = clampInt(options.n, 1, 4);
 
-    // Try images/generations API first
+    // Mode: images - use /images/generations only
+    if (mode === 'images') {
+        return await generateImagesViaImagesApi({ ...options, n: count });
+    }
+
+    // Mode: chat - use /chat/completions only
+    if (mode === 'chat') {
+        const out: GeneratedImage[] = [];
+        for (let i = 0; i < count; i++) {
+            const batch = await generateImagesViaChatCompletions(options);
+            out.push(...batch);
+            if (out.length >= count) break;
+        }
+        return out.slice(0, count);
+    }
+
+    // Mode: auto - try images first, fallback to chat on 404
     try {
         return await generateImagesViaImagesApi({ ...options, n: count });
     } catch (err: unknown) {
-        // If 404, fall back to chat/completions
-        if (err instanceof Error && err.message.includes('404')) {
+        const status = (err as Error & { status?: number }).status;
+        if (status === 404) {
             const out: GeneratedImage[] = [];
             for (let i = 0; i < count; i++) {
                 const batch = await generateImagesViaChatCompletions(options);

@@ -1,61 +1,39 @@
-import type { PluginContext, PluginActivation, Message } from 'alma-plugin-api';
+import type { PluginContext, PluginActivation } from 'alma-plugin-api';
+import { z } from 'zod';
 import { generateImages, extFromMime, type GeneratedImage } from './lib/gemini-api';
 
 /**
  * Gemini Image Generator Plugin
  *
- * This plugin allows users to generate images from conversation context
- * using Gemini's image generation model via the /image command.
+ * Registers a `generate_image` tool for AI to generate images using
+ * OpenAI-compatible image generation APIs (like Gemini).
  *
- * Usage:
- *   /image                    - Generate image based on conversation context
- *   /image <prompt>           - Generate image with additional prompt
- *   /image -n 2 <prompt>      - Generate multiple images (1-4)
+ * Configuration:
+ *   - baseUrl: API endpoint (default: http://127.0.0.1:8317)
+ *   - apiKey: API key (stored in secrets)
+ *   - model: Model name (default: gemini-2.0-flash-preview-image-generation)
+ *   - imageSize: Default image size (default: 1024x1024)
+ *   - outputDir: Directory to save images (default: generated-images)
+ *   - timeoutMs: Request timeout in ms (default: 120000)
+ *   - mode: API mode - auto/images/chat (default: auto)
  */
 
+// ============================================================================
+// Types
+// ============================================================================
+
 interface PluginSettings {
-    providerId?: string;
     baseUrl: string;
     model: string;
     imageSize: string;
     outputDir: string;
     timeoutMs: number;
-    maxContextMessages: number;
-    apiKey?: string;
+    mode: 'auto' | 'images' | 'chat';
 }
 
-/**
- * Parse /image command to extract options and prompt
- */
-function parseImageCommand(content: string): {
-    isImageCommand: boolean;
-    count: number;
-    userPrompt: string;
-} {
-    const trimmed = content.trim();
-
-    // Check if it starts with /image
-    if (!trimmed.startsWith('/image')) {
-        return { isImageCommand: false, count: 1, userPrompt: '' };
-    }
-
-    // Remove /image prefix
-    let remaining = trimmed.slice(6).trim();
-
-    // Parse -n option for count
-    let count = 1;
-    const countMatch = remaining.match(/^-n\s+(\d+)\s*/);
-    if (countMatch) {
-        count = Math.max(1, Math.min(4, parseInt(countMatch[1], 10)));
-        remaining = remaining.slice(countMatch[0].length);
-    }
-
-    return {
-        isImageCommand: true,
-        count,
-        userPrompt: remaining.trim(),
-    };
-}
+// ============================================================================
+// Utilities
+// ============================================================================
 
 /**
  * Format date for filename
@@ -72,48 +50,7 @@ function generateFilename(index: number, mimeType: string): string {
     const timestamp = formatDateForFilename();
     const ext = extFromMime(mimeType);
     const random = Math.random().toString(36).substring(2, 8);
-    return `gemini-${timestamp}-${index + 1}-${random}.${ext}`;
-}
-
-/**
- * Build prompt from conversation context and user input
- */
-function buildPromptFromContext(
-    messages: Message[],
-    userPrompt: string,
-    maxMessages: number
-): string {
-    const parts: string[] = [];
-
-    // Add conversation context
-    if (messages.length > 0) {
-        const recentMessages = messages.slice(-maxMessages);
-        const contextParts: string[] = [];
-
-        for (const msg of recentMessages) {
-            const role = msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : '系统';
-            const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-            contextParts.push(`${role}: ${content}`);
-        }
-
-        if (contextParts.length > 0) {
-            parts.push('以下是对话上下文，请根据这些内容生成相关的图片：\n');
-            parts.push(contextParts.join('\n'));
-            parts.push('\n');
-        }
-    }
-
-    // Add user's additional prompt
-    if (userPrompt) {
-        parts.push(`\n额外要求：${userPrompt}`);
-    }
-
-    // If no context and no prompt, provide a default
-    if (parts.length === 0) {
-        return '请生成一张有创意的图片';
-    }
-
-    return parts.join('');
+    return `image-${timestamp}-${index + 1}-${random}.${ext}`;
 }
 
 /**
@@ -128,87 +65,50 @@ function base64ToUint8Array(base64: string): Uint8Array {
     return bytes;
 }
 
+/**
+ * Normalize size input (e.g., 1024 -> "1024x1024")
+ */
+function normalizeSize(size: string | number | undefined, defaultSize: string): string {
+    if (size === undefined || size === null) return defaultSize;
+    const s = String(size).trim();
+    if (/^\d+$/.test(s)) return `${s}x${s}`;
+    return s || defaultSize;
+}
+
+// ============================================================================
+// Plugin Activation
+// ============================================================================
+
 export async function activate(context: PluginContext): Promise<PluginActivation> {
-    const { logger, events, settings, chat, workspace, ui, storage, providers } = context;
+    const { logger, settings, workspace, ui, storage } = context;
 
-    logger.info('Gemini Image Generator plugin activated!');
+    logger.info('Gemini Image Generator plugin activated');
 
-    // Storage key for persistent config backup
-    const CONFIG_STORAGE_KEY = 'gemini-image-config';
+    // ========================================================================
+    // Settings
+    // ========================================================================
 
-    // Save config to local storage when settings change
-    const saveCurrentConfig = async (): Promise<void> => {
-        try {
-            const config = {
-                baseUrl: settings.get<string>('geminiImage.baseUrl', ''),
-                model: settings.get<string>('geminiImage.model', ''),
-                imageSize: settings.get<string>('geminiImage.imageSize', ''),
-                outputDir: settings.get<string>('geminiImage.outputDir', ''),
-                timeoutMs: settings.get<number>('geminiImage.timeoutMs', 0),
-                maxContextMessages: settings.get<number>('geminiImage.maxContextMessages', 0),
-            };
-            await storage.local.set(CONFIG_STORAGE_KEY, config);
-            logger.debug('配置已备份到本地存储');
-        } catch (err) {
-            logger.warn(`保存配置失败: ${err}`);
-        }
-    };
-
-    // Load saved config and apply as defaults if settings are empty
-    const initializeConfig = async (): Promise<void> => {
-        try {
-            const saved = await storage.local.get<Partial<PluginSettings>>(CONFIG_STORAGE_KEY);
-            if (saved) {
-                // If current settings are default/empty, restore from backup
-                if (!settings.get<string>('geminiImage.baseUrl') && saved.baseUrl) {
-                    await settings.update('geminiImage.baseUrl', saved.baseUrl);
-                }
-                if (!settings.get<string>('geminiImage.model') && saved.model) {
-                    await settings.update('geminiImage.model', saved.model);
-                }
-                if (!settings.get<string>('geminiImage.apiKey') && saved.apiKey) {
-                    await settings.update('geminiImage.apiKey', saved.apiKey);
-                }
-                logger.info('已从备份恢复配置');
-            }
-        } catch (err) {
-            logger.warn(`恢复配置失败: ${err}`);
-        }
-    };
-
-    // Initialize config on startup
-    await initializeConfig();
-
-    // Get settings helper
     const getSettings = (): PluginSettings => ({
-        providerId: settings.get<string>('geminiImage.providerId', ''),
         baseUrl: settings.get<string>('geminiImage.baseUrl', 'http://127.0.0.1:8317'),
         model: settings.get<string>('geminiImage.model', 'gemini-3-pro-image-preview'),
         imageSize: settings.get<string>('geminiImage.imageSize', '1024x1024'),
         outputDir: settings.get<string>('geminiImage.outputDir', 'generated-images'),
         timeoutMs: settings.get<number>('geminiImage.timeoutMs', 120000),
-        maxContextMessages: settings.get<number>('geminiImage.maxContextMessages', 10),
+        mode: settings.get<'auto' | 'images' | 'chat'>('geminiImage.mode', 'auto'),
     });
 
-    // Watch for settings changes and save to local storage
-    const settingsChangeDisposable = settings.onDidChange(async (event) => {
-        if (event.key.startsWith('geminiImage.')) {
-            await saveCurrentConfig();
-        }
-    });
-
-    // Get API key from settings or secrets (secrets survive plugin updates)
     const getApiKey = async (): Promise<string | undefined> => {
-        // First try settings
+        // Try settings first
         const settingsKey = settings.get<string>('geminiImage.apiKey', '');
-        if (settingsKey && settingsKey.trim()) {
-            return settingsKey.trim();
-        }
-        // Fall back to secrets (persistent)
+        if (settingsKey?.trim()) return settingsKey.trim();
+        // Fall back to secrets
         return await storage.secrets.get('geminiImage.apiKey');
     };
 
-    // Save images and return markdown paths
+    // ========================================================================
+    // Image Saving
+    // ========================================================================
+
     const saveImages = async (
         images: GeneratedImage[],
         outputDir: string
@@ -227,7 +127,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             const filePath = `${fullOutputDir}/${filename}`;
 
             try {
-                // Convert base64 to Uint8Array and write file
                 const bytes = base64ToUint8Array(image.base64);
                 await workspace.writeFile(filePath, bytes);
                 savedPaths.push(filePath);
@@ -241,186 +140,39 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         return savedPaths;
     };
 
-    // Format paths as markdown
     const formatAsMarkdown = (paths: string[]): string => {
-        const lines: string[] = ['## 🎨 生成的图片\n'];
+        const lines: string[] = [];
 
         for (let i = 0; i < paths.length; i++) {
-            const path = paths[i];
-            // Use relative path for markdown
+            const filePath = paths[i];
             const relativePath = workspace.rootPath
-                ? path.replace(workspace.rootPath + '/', '')
-                : path;
-            lines.push(`### 图片 ${i + 1}`);
-            lines.push(`![生成的图片 ${i + 1}](${relativePath})\n`);
-            lines.push(`📁 路径: \`${relativePath}\`\n`);
+                ? filePath.replace(workspace.rootPath + '/', '')
+                : filePath;
+            
+            // Use file:// URI for markdown rendering
+            const displayPath = filePath.replace(/\\/g, '/');
+            const fileUri = `file:///${displayPath.replace(/^\//, '')}`;
+            
+            lines.push(`![image-${i + 1}](${fileUri})`);
+            lines.push(`📁 ${relativePath}`);
+            lines.push('');
         }
 
         return lines.join('\n');
     };
 
-    // Register /image command
-    const imageCommand = context.commands.register(
-        'image',
-        async (args?: string) => {
-            const config = getSettings();
-            const userPrompt = args?.trim() || '';
-            
-            // Parse -n option for count
-            let count = 1;
-            let prompt = userPrompt;
-            const countMatch = userPrompt.match(/^-n\s+(\d+)\s*/);
-            if (countMatch) {
-                count = Math.max(1, Math.min(4, parseInt(countMatch[1], 10)));
-                prompt = userPrompt.slice(countMatch[0].length).trim();
-            }
+    // ========================================================================
+    // Commands
+    // ========================================================================
 
-            try {
-                await ui.withProgress(
-                    { title: '🎨 正在生成图片...', cancellable: false },
-                    async (progress) => {
-                        progress.report({ message: '获取对话上下文...' });
-
-                        let finalPrompt = prompt;
-
-                        // If no prompt provided, try to get context from active thread
-                        if (!finalPrompt.trim()) {
-                            try {
-                                const activeThread = await chat.getActiveThread();
-                                if (activeThread?.id) {
-                                    const messages = await chat.getMessages(activeThread.id);
-                                    if (messages.length > 0) {
-                                        finalPrompt = buildPromptFromContext(
-                                            messages,
-                                            '',
-                                            config.maxContextMessages
-                                        );
-                                    }
-                                }
-                            } catch (err) {
-                                logger.warn(`获取对话上下文失败: ${err}`);
-                            }
-                        }
-
-                        if (!finalPrompt.trim()) {
-                            finalPrompt = '请生成一张有创意的图片';
-                        }
-
-                        progress.report({ message: '调用 Gemini API...' });
-
-                        const apiKey = await getApiKey();
-                        const images = await generateImages({
-                            baseUrl: config.baseUrl,
-                            apiKey,
-                            model: config.model,
-                            prompt: finalPrompt,
-                            size: config.imageSize,
-                            n: count,
-                            timeoutMs: config.timeoutMs,
-                        });
-
-                        progress.report({ message: '保存图片...' });
-
-                        const savedPaths = await saveImages(images, config.outputDir);
-                        const markdown = formatAsMarkdown(savedPaths);
-                        
-                        ui.showNotification(
-                            `✅ 成功生成 ${savedPaths.length} 张图片！`,
-                            { type: 'success' }
-                        );
-
-                        // Return markdown for display
-                        return markdown;
-                    }
-                );
-            } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : String(err);
-                ui.showError(`图片生成失败: ${errorMessage}`);
-            }
-        }
-    );
-
-    // Register /provider command
-    const providerCommand = context.commands.register(
-        'provider',
-        async (args?: string) => {
-            // Check if user is selecting a provider by number
-            if (args && /^\d+$/.test(args.trim())) {
-                const index = parseInt(args.trim(), 10) - 1;
-                try {
-                    const savedList = await storage.local.get<Array<{ id: string; name: string }>>('gemini-image-provider-list');
-                    if (savedList && index >= 0 && index < savedList.length) {
-                        const selected = savedList[index];
-                        await settings.update('geminiImage.providerId', selected.id);
-                        ui.showNotification(`已选择供应商: ${selected.name}`, { type: 'success' });
-                        return `✅ 已选择供应商: **${selected.name}** (${selected.id})`;
-                    } else {
-                        ui.showWarning('无效的编号，请先使用 /provider 查看可用供应商列表');
-                        return '❌ 无效的编号';
-                    }
-                } catch (err) {
-                    ui.showError(`选择供应商失败: ${err}`);
-                    return `❌ 选择供应商失败: ${err}`;
-                }
-            }
-
-            // Show provider list
-            try {
-                const providerList = await providers.list();
-                
-                if (providerList.length === 0) {
-                    return '❌ 没有可用的供应商';
-                }
-
-                const enabledProviders = providerList.filter((p: { enabled: boolean }) => p.enabled);
-                
-                if (enabledProviders.length === 0) {
-                    return '❌ 没有已启用的供应商';
-                }
-
-                const currentProviderId = settings.get<string>('geminiImage.providerId', '');
-                let message = '## 📋 可用的供应商\n\n';
-                message += '使用 `/provider <编号>` 来选择：\n\n';
-                
-                enabledProviders.forEach((p: { id: string; name: string; type: string }, index: number) => {
-                    const isCurrent = p.id === currentProviderId;
-                    const marker = isCurrent ? ' ✅ (当前)' : '';
-                    message += `**${index + 1}.** ${p.name} (${p.id})${marker}\n`;
-                });
-
-                message += '\n---\n';
-                message += `当前配置：\n`;
-                message += `- 供应商: ${currentProviderId || '未选择'}\n`;
-                message += `- Base URL: ${settings.get<string>('geminiImage.baseUrl', 'http://127.0.0.1:8317')}\n`;
-                message += `- 模型: ${settings.get<string>('geminiImage.model', 'gemini-3-pro-image-preview')}\n`;
-
-                await storage.local.set('gemini-image-provider-list', enabledProviders.map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
-
-                return message;
-            } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : String(err);
-                return `❌ 获取供应商列表失败: ${errorMessage}`;
-            }
-        }
-    );
-
-    // Register command to generate image (alias for /image)
-    const generateImageCommand = context.commands.register(
-        'generate',
-        async (args?: string) => {
-            // Execute the image command
-            return await context.commands.execute('gemini-image.image', args);
-        }
-    );
-
-    // Register command to set API key
+    // Set API Key command
     const setApiKeyCommand = context.commands.register(
         'setApiKey',
         async () => {
             const apiKey = await ui.showInputBox({
-                title: '设置 Gemini API Key',
-                prompt: '请输入您的 Gemini API Key',
-                placeholder: 'sk-...',
+                title: '设置 API Key',
+                prompt: '请输入您的 API Key',
+                placeholder: 'sk-... 或 AIza...',
                 password: true,
             });
 
@@ -431,7 +183,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         }
     );
 
-    // Register command to clear API key
+    // Clear API Key command
     const clearApiKeyCommand = context.commands.register(
         'clearApiKey',
         async () => {
@@ -447,44 +199,66 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         }
     );
 
-    // Register command to select provider (alias for /provider)
-    const selectProviderCommand = context.commands.register(
-        'selectProvider',
-        async (args?: string) => {
-            // Execute the provider command
-            return await context.commands.execute('gemini-image.provider', args);
-        }
-    );
+    // ========================================================================
+    // Tool Registration
+    // ========================================================================
 
-    // Register a tool for AI to generate images
-    // The AI is responsible for providing a detailed prompt based on conversation context
-    const toolDisposable = context.tools.register('generateImage', {
-        description: '根据详细描述生成图片。调用此工具时，你必须在 prompt 参数中提供完整、详细的图片描述，包括主题、风格、场景、颜色、细节等。如果用户要求根据对话生成图片，你需要先总结对话内容，然后生成一个详细的图片描述传递给此工具。',
-        parameters: {
-            type: 'object',
-            properties: {
-                prompt: {
-                    type: 'string',
-                    description: '详细的图片描述。必须包含：1) 主题/主体 2) 风格（如写实、卡通、油画等）3) 场景/背景 4) 颜色和光线 5) 其他细节。描述越详细，生成的图片越准确。',
-                },
-                count: {
-                    type: 'number',
-                    description: '要生成的图片数量（1-4），默认为 1',
-                    default: 1,
-                },
-            },
-            required: ['prompt'],
-        } as const,
-        execute: async (params, toolContext) => {
-            const { prompt, count = 1 } = params as { prompt: string; count?: number };
+    const toolDisposable = context.tools.register('generate_image', {
+        description: `生成 AI 图片。当用户需要创建、绘制、生成图片/图像/插图/照片时使用此工具。
+
+使用场景：
+- 用户说"画一个..."、"生成一张..."、"创建图片..."
+- 需要可视化某个概念或想法
+- 制作插图、图标、艺术作品
+
+返回说明：
+- 图片会保存到工作区目录，并返回文件路径
+- 你可以使用 Markdown 语法渲染图片：![image](file:///path/to/image.png)
+
+提示词技巧：prompt 越详细效果越好，建议包含：主体、风格、颜色、构图、光线等`,
+
+        parameters: z.object({
+            prompt: z.union([
+                z.string(),
+                z.array(z.string())
+            ]).describe('图片描述（必填）。详细描述想要生成的图片内容，如："一只橙色的猫咪坐在窗台上，阳光透过窗户照进来，水彩画风格"'),
+            
+            size: z.union([
+                z.string(),
+                z.number()
+            ]).optional().describe('图片尺寸。默认 1024x1024。可选：512x512、1024x1024、1024x1792（竖版）、1792x1024（横版）。传数字如 512 会自动变成 512x512'),
+            
+            n: z.number().int().min(1).max(4).optional().describe('生成数量。默认 1，最多 4'),
+            
+            outDir: z.string().optional().describe('保存目录（相对于工作区）。默认使用插件设置的目录'),
+        }),
+
+        execute: async (params) => {
             const config = getSettings();
 
-            if (!prompt || !prompt.trim()) {
+            // Parse prompt
+            let prompt = '';
+            if (Array.isArray(params.prompt)) {
+                prompt = params.prompt.join(' ').trim();
+            } else {
+                prompt = String(params.prompt ?? '').trim();
+            }
+
+            if (!prompt) {
                 return {
                     success: false,
-                    error: '请提供图片描述（prompt 参数不能为空）',
+                    error: '参数 prompt 不能为空',
                 };
             }
+
+            // Parse size
+            const size = normalizeSize(params.size, config.imageSize);
+
+            // Parse count
+            const n = Math.max(1, Math.min(4, params.n ?? 1));
+
+            // Parse output directory
+            const outDir = params.outDir?.trim() || config.outputDir;
 
             try {
                 const apiKey = await getApiKey();
@@ -493,39 +267,50 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                     baseUrl: config.baseUrl,
                     apiKey,
                     model: config.model,
-                    prompt: prompt,
-                    size: config.imageSize,
-                    n: Math.max(1, Math.min(4, count)),
+                    prompt,
+                    size,
+                    n,
                     timeoutMs: config.timeoutMs,
+                    mode: config.mode,
                 });
 
-                const savedPaths = await saveImages(images, config.outputDir);
+                const savedPaths = await saveImages(images, outDir);
                 const markdown = formatAsMarkdown(savedPaths);
 
                 return {
                     success: true,
-                    message: `成功生成 ${savedPaths.length} 张图片`,
+                    message: `✅ 成功生成 ${savedPaths.length} 张图片`,
                     paths: savedPaths,
                     markdown,
                 };
             } catch (err) {
                 const errorMessage = err instanceof Error ? err.message : String(err);
+                
+                // Provide helpful suggestions
+                let suggestion = '';
+                if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ENOTFOUND')) {
+                    suggestion = '\n💡 建议：检查 baseUrl 是否正确，服务是否已启动';
+                } else if (errorMessage.includes('401') || errorMessage.includes('API Key')) {
+                    suggestion = '\n💡 建议：使用 gemini-image.setApiKey 命令设置 API Key';
+                } else if (errorMessage.includes('超时')) {
+                    suggestion = '\n💡 建议：增加 geminiImage.timeoutMs 设置';
+                }
+
                 return {
                     success: false,
-                    error: errorMessage,
+                    error: `${errorMessage}${suggestion}`,
                 };
             }
         },
     });
 
+    // ========================================================================
+    // Cleanup
+    // ========================================================================
+
     return {
         dispose: () => {
             logger.info('Gemini Image Generator plugin deactivated');
-            settingsChangeDisposable.dispose();
-            imageCommand.dispose();
-            providerCommand.dispose();
-            generateImageCommand.dispose();
-            selectProviderCommand.dispose();
             setApiKeyCommand.dispose();
             clearApiKeyCommand.dispose();
             toolDisposable.dispose();

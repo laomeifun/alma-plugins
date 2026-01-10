@@ -1,48 +1,28 @@
 {
     "id": "gemini-image",
     "name": "Gemini Image Generator",
-    "version": "1.0.0",
-    "description": "Generate images from conversation context using Gemini's image generation model. Use /image command to trigger.",
+    "version": "2.0.0",
+    "description": "Generate images using OpenAI-compatible image generation APIs (like Gemini). Registers a generate_image tool for AI to use.",
     "author": {
         "name": "Alma Plugins",
-        "email": "hello@alma.now"
+        "email": "hello@alma.sh"
     },
     "main": "main.js",
     "engines": {
         "alma": "^0.1.0"
     },
     "type": "tool",
-    "permissions": ["notifications", "tools:register", "storage", "secrets", "chat:read", "workspace:write"],
+    "permissions": ["notifications", "tools:register", "storage", "secrets", "workspace:write"],
     "activationEvents": ["onStartup"],
     "contributes": {
         "tools": [
             {
-                "id": "gemini-image.generateImage",
+                "id": "gemini-image.generate_image",
                 "name": "Generate Image",
-                "description": "Generate images from text description using Gemini"
+                "description": "Generate images from text description using AI"
             }
         ],
         "commands": [
-            {
-                "id": "gemini-image.image",
-                "title": "Generate Image from Context",
-                "category": "Gemini Image"
-            },
-            {
-                "id": "gemini-image.provider",
-                "title": "Select/View Providers",
-                "category": "Gemini Image"
-            },
-            {
-                "id": "gemini-image.generate",
-                "title": "Generate Image (Dialog)",
-                "category": "Gemini Image"
-            },
-            {
-                "id": "gemini-image.selectProvider",
-                "title": "Select Provider (Dialog)",
-                "category": "Gemini Image"
-            },
             {
                 "id": "gemini-image.setApiKey",
                 "title": "Set API Key",
@@ -57,20 +37,15 @@
         "configuration": {
             "title": "Gemini Image Generator",
             "properties": {
-                "geminiImage.providerId": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Selected provider ID (use 'Select Provider' command to choose)"
-                },
                 "geminiImage.baseUrl": {
                     "type": "string",
                     "default": "http://127.0.0.1:8317",
-                    "description": "Base URL for the Gemini API proxy (used when no provider is selected)"
+                    "description": "Base URL for the image generation API (OpenAI-compatible endpoint)"
                 },
                 "geminiImage.apiKey": {
                     "type": "string",
                     "default": "",
-                    "description": "API Key for Gemini API (leave empty if using proxy without auth)"
+                    "description": "API Key (leave empty if using proxy without auth, or use 'Set API Key' command for secure storage)"
                 },
                 "geminiImage.model": {
                     "type": "string",
@@ -79,24 +54,27 @@
                 },
                 "geminiImage.imageSize": {
                     "type": "string",
-                    "enum": ["512x512", "1024x1024", "1536x1536"],
+                    "enum": ["512x512", "1024x1024", "1024x1792", "1792x1024"],
                     "default": "1024x1024",
-                    "description": "Size of generated images"
+                    "description": "Default size of generated images"
                 },
                 "geminiImage.outputDir": {
                     "type": "string",
                     "default": "generated-images",
-                    "description": "Subdirectory for saving generated images (relative to workspace root)"
+                    "description": "Directory for saving generated images (relative to workspace root)"
                 },
                 "geminiImage.timeoutMs": {
                     "type": "number",
                     "default": 120000,
+                    "minimum": 5000,
+                    "maximum": 600000,
                     "description": "Timeout for API requests in milliseconds"
                 },
-                "geminiImage.maxContextMessages": {
-                    "type": "number",
-                    "default": 10,
-                    "description": "Maximum number of recent messages to include as context"
+                "geminiImage.mode": {
+                    "type": "string",
+                    "enum": ["auto", "images", "chat"],
+                    "default": "auto",
+                    "description": "API mode: 'auto' tries /images/generations first then /chat/completions, 'images' uses only /images/generations, 'chat' uses only /chat/completions"
                 }
             }
         }
