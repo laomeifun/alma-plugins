@@ -4,7 +4,6 @@
  * AI 图片生成和编辑工具，支持 Gemini 多轮对话 (Nano Banana)
  */
 import type { PluginContext, PluginActivation, ToolContext } from 'alma-plugin-api';
-import { z } from 'zod';
 import { loadConfig, saveApiKey, deleteApiKey, hasApiKey, DEFAULTS } from './lib/config';
 import { generateImages, type Message } from './lib/api-client';
 import { SessionManager } from './lib/session-manager';
@@ -25,31 +24,42 @@ import {
 } from './lib/utils';
 
 /**
- * 工具参数 Schema (Zod 格式)
+ * 工具参数 Schema (JSON Schema 格式)
  */
-const generateImageSchema = z.object({
-    prompt: z.union([z.string(), z.array(z.string())]).describe(
-        '图片描述（必填）。详细描述想要生成的图片内容，或描述要对现有图片进行的修改'
-    ),
-    session_id: z.string().optional().describe(
-        '会话 ID（可选）。传入之前返回的 session_id 可继续多轮对话编辑同一张图片'
-    ),
-    image: z.string().optional().describe(
-        '输入图片（可选）。支持 base64 编码或 data:image/... URL。传入后将基于此图片进行编辑'
-    ),
-    size: z.union([z.string(), z.number()]).optional().describe(
-        '图片尺寸。默认 1024x1024。可选：512x512、1024x1792（竖版）、1792x1024（横版）'
-    ),
-    n: z.union([z.number(), z.string()]).optional().describe(
-        '生成数量。默认 1，最多 4'
-    ),
-    output: z.string().optional().describe(
-        "返回格式。默认 'path'（保存文件+返回路径）。设为 'image' 只返回图片数据不保存文件"
-    ),
-    outDir: z.string().optional().describe(
-        '保存目录。支持绝对路径、相对路径或 ~ 开头的用户目录路径'
-    ),
-});
+const generateImageSchema = {
+    type: 'object',
+    properties: {
+        prompt: {
+            oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+            description: '图片描述（必填）。详细描述想要生成的图片内容，或描述要对现有图片进行的修改',
+        },
+        session_id: {
+            type: 'string',
+            description: '会话 ID（可选）。传入之前返回的 session_id 可继续多轮对话编辑同一张图片',
+        },
+        image: {
+            type: 'string',
+            description: '输入图片（可选）。支持 base64 编码或 data:image/... URL。传入后将基于此图片进行编辑',
+        },
+        size: {
+            oneOf: [{ type: 'string' }, { type: 'number' }],
+            description: '图片尺寸。默认 1024x1024。可选：512x512、1024x1792（竖版）、1792x1024（横版）',
+        },
+        n: {
+            oneOf: [{ type: 'integer' }, { type: 'number' }, { type: 'string' }],
+            description: '生成数量。默认 1，最多 4',
+        },
+        output: {
+            type: 'string',
+            description: "返回格式。默认 'path'（保存文件+返回路径）。设为 'image' 只返回图片数据不保存文件",
+        },
+        outDir: {
+            type: 'string',
+            description: '保存目录。支持绝对路径、相对路径或 ~ 开头的用户目录路径',
+        },
+    },
+    required: ['prompt'],
+} as const;
 
 /**
  * 工具参数类型
