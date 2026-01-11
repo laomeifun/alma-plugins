@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(gemini-images\\): correct tool and command ID prefixes to match plugin ID\n\n- Changed manifest IDs from geminiImages.* to gemini-images.* format\n- Updated command registration to use short IDs \\(Alma auto-prefixes\\)\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(npm install)",
+      "Bash(pnpm install)",
+      "Bash(npx tsc:*)",
+      "Bash(npm install:*)"
+    ]
+  }
+}
