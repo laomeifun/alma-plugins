@@ -1,0 +1,80 @@
+{
+    "id": "gemini-images",
+    "name": "Gemini Images",
+    "version": "1.0.0",
+    "description": "AI 图片生成和编辑工具，支持 Gemini 多轮对话 (Nano Banana)",
+    "author": {
+        "name": "Alma Team",
+        "email": "hello@alma.now"
+    },
+    "main": "main.js",
+    "engines": {
+        "alma": "^0.1.0"
+    },
+    "type": "tool",
+    "permissions": [
+        "tools:register",
+        "commands:register",
+        "notifications",
+        "storage:local",
+        "storage:secrets"
+    ],
+    "activationEvents": ["onStartup"],
+    "contributes": {
+        "tools": [
+            {
+                "id": "geminiImages.generate_image",
+                "name": "Generate Image",
+                "description": "生成或编辑 AI 图片，支持多轮对话"
+            }
+        ],
+        "commands": [
+            {
+                "id": "geminiImages.configure",
+                "title": "Configure API Key",
+                "category": "Gemini Images"
+            },
+            {
+                "id": "geminiImages.clearSessions",
+                "title": "Clear All Sessions",
+                "category": "Gemini Images"
+            }
+        ],
+        "configuration": {
+            "title": "Gemini Images",
+            "properties": {
+                "geminiImages.baseUrl": {
+                    "type": "string",
+                    "default": "https://generativelanguage.googleapis.com/v1beta",
+                    "description": "Gemini API 基础 URL"
+                },
+                "geminiImages.model": {
+                    "type": "string",
+                    "default": "gemini-2.0-flash-exp-image-generation",
+                    "description": "默认模型名称"
+                },
+                "geminiImages.defaultSize": {
+                    "type": "string",
+                    "default": "1024x1024",
+                    "enum": ["512x512", "1024x1024", "1024x1792", "1792x1024"],
+                    "description": "默认图片尺寸"
+                },
+                "geminiImages.defaultOutDir": {
+                    "type": "string",
+                    "default": "",
+                    "description": "默认保存目录（留空则使用系统图片目录）"
+                },
+                "geminiImages.sessionTtlMinutes": {
+                    "type": "number",
+                    "default": 30,
+                    "description": "会话过期时间（分钟）"
+                },
+                "geminiImages.timeoutSeconds": {
+                    "type": "number",
+                    "default": 120,
+                    "description": "API 请求超时时间（秒）"
+                }
+            }
+        }
+    }
+}
