@@ -23,19 +23,19 @@
     "contributes": {
         "tools": [
             {
-                "id": "geminiImages.generate_image",
+                "id": "gemini-images.generate_image",
                 "name": "Generate Image",
                 "description": "生成或编辑 AI 图片，支持多轮对话"
             }
         ],
         "commands": [
             {
-                "id": "geminiImages.configure",
+                "id": "gemini-images.configure",
                 "title": "Configure API Key",
                 "category": "Gemini Images"
             },
             {
-                "id": "geminiImages.clearSessions",
+                "id": "gemini-images.clearSessions",
                 "title": "Clear All Sessions",
                 "category": "Gemini Images"
             }

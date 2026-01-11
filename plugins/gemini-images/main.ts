@@ -276,7 +276,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     });
 
     // 注册配置命令
-    const configureCommand = commands.register('geminiImages.configure', async () => {
+    const configureCommand = commands.register('configure', async () => {
         const currentHasKey = await hasApiKey(context);
         const currentStatus = currentHasKey ? '（已配置）' : '（未配置）';
 
@@ -307,7 +307,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     });
 
     // 注册清除会话命令
-    const clearSessionsCommand = commands.register('geminiImages.clearSessions', async () => {
+    const clearSessionsCommand = commands.register('clearSessions', async () => {
         const stats = sessionManager.getStats();
         if (stats.count === 0) {
             ui.showNotification('没有活动的会话', { type: 'info' });
