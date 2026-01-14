@@ -117,11 +117,21 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     // =========================================================================
 
     /**
+     * Check if response contains "No capacity available" error
+     * This error indicates the model is overloaded on this account - try another account
+     */
+    const isCapacityError = (responseText: string): boolean => {
+        return responseText.includes('No capacity available') ||
+               responseText.includes('RESOURCE_EXHAUSTED');
+    };
+
+    /**
      * Creates a custom fetch function that:
      * 1. Gets account with automatic rotation on rate limits
      * 2. Transforms request to Antigravity format
      * 3. Handles rate limiting with account rotation
-     * 4. Handles response transformation
+     * 4. Handles capacity errors with account rotation
+     * 5. Handles response transformation
      */
     const createAntigravityFetch = (): typeof globalThis.fetch => {
         return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -161,7 +171,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             let lastError: Error | null = null;
             let lastResponse: Response | null = null;
             let attempts = 0;
-            let forceRotate = false; // Set to true after rate limit to force switching account
+            let forceRotate = false; // Set to true after rate limit/capacity error to force switching account
             const maxAttempts = tokenStore.getAccountCount() * 2; // Allow 2 attempts per account
 
             while (attempts < maxAttempts) {
@@ -171,7 +181,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 // - Session stickiness (same conversation uses same account)
                 // - 60s global lock (non-image requests reuse account)
                 // - Tier priority (ULTRA > PRO > FREE)
-                // - forceRotate: if previous attempt was rate limited, force switch account
+                // - forceRotate: if previous attempt was rate limited or capacity error, force switch account
                 let accountInfo: { accessToken: string; projectId: string; account: ManagedAccount; headerStyle: HeaderStyle };
                 try {
                     accountInfo = await tokenStore.getValidAccessTokenForRequest(modelFamily, sessionId, isImage, forceRotate);
@@ -254,11 +264,75 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                             continue;
                         }
 
-                        // Handle non-OK responses
+                        // Handle non-OK responses (but check for capacity errors first)
                         if (!response.ok) {
                             const errorText = await response.clone().text();
+
+                            // Check for capacity errors - these should trigger account rotation
+                            // (similar to rate limit handling)
+                            if (isCapacityError(errorText)) {
+                                logger.warn(`Capacity error at ${endpoint}, account ${account.index} (${account.email || 'unknown'}), model ${transformed.effectiveModel}`);
+
+                                // Mark account as having capacity issues for this model
+                                // Use a short timeout since capacity issues are usually temporary
+                                await tokenStore.markRateLimited(account, 503, '30', errorText, transformed.effectiveModel);
+
+                                // Check if we have more available accounts
+                                const accountId = account.email || String(account.index);
+                                const accountManager = tokenStore.getAccountManager();
+                                const hasAvailableAccounts = accountManager.getSortedAccountsSnapshot().some(
+                                    a => (a.email || String(a.index)) !== accountId && !accountManager.isRateLimited(a.email || String(a.index))
+                                );
+
+                                if (hasAvailableAccounts) {
+                                    logger.info('Capacity error - switching to next available account...');
+                                    forceRotate = true; // Force switch account on next iteration
+                                    break; // Break from endpoint loop to try next account
+                                }
+
+                                // All accounts have capacity issues, return error
+                                logger.warn('All accounts have capacity issues for this model');
+                            }
+
                             logger.error(`Antigravity API error: ${response.status}`, errorText);
                             return response;
+                        }
+
+                        // For non-streaming responses, check for capacity errors in the body
+                        // (some capacity errors come as 200 OK with error in body)
+                        if (!transformed.streaming) {
+                            const responseText = await response.clone().text();
+
+                            if (isCapacityError(responseText)) {
+                                logger.warn(`Capacity error (200 OK) at ${endpoint}, account ${account.index} (${account.email || 'unknown'}), model ${transformed.effectiveModel}`);
+
+                                // Mark account as having capacity issues
+                                await tokenStore.markRateLimited(account, 503, '30', responseText, transformed.effectiveModel);
+
+                                // Check if we have more available accounts
+                                const accountId = account.email || String(account.index);
+                                const accountManager = tokenStore.getAccountManager();
+                                const hasAvailableAccounts = accountManager.getSortedAccountsSnapshot().some(
+                                    a => (a.email || String(a.index)) !== accountId && !accountManager.isRateLimited(a.email || String(a.index))
+                                );
+
+                                if (hasAvailableAccounts) {
+                                    logger.info('Capacity error (200 OK) - switching to next available account...');
+                                    forceRotate = true; // Force switch account on next iteration
+                                    break; // Break from endpoint loop to try next account
+                                }
+
+                                // All accounts have capacity issues, return error with proper status
+                                logger.warn('All accounts have capacity issues for this model');
+                                return new Response(responseText, {
+                                    status: 503,
+                                    statusText: 'Service Unavailable',
+                                    headers: {
+                                        'content-type': 'application/json',
+                                        'retry-after': '30',
+                                    },
+                                });
+                            }
                         }
 
                         // Success! Transform response
