@@ -392,6 +392,13 @@ export class TokenStore {
             account.refreshToken = newTokens.refresh_token;
         }
 
+        // Update project_id if it was fetched/updated during refresh
+        // (matches CLIProxyAPI v6.6.108 ensureAntigravityProjectID behavior)
+        if (newTokens.project_id && newTokens.project_id !== account.projectId) {
+            this.logger.info(`Updating project_id for account ${account.index}: ${account.projectId} -> ${newTokens.project_id}`);
+            account.projectId = newTokens.project_id;
+        }
+
         this.logger.info(`Successfully refreshed token for account ${account.index}`);
     }
 

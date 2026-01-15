@@ -190,6 +190,10 @@ export async function exchangeCodeForTokens(
 
 /**
  * Refresh access token using refresh token
+ *
+ * Note: This function also ensures project_id is valid. If the passed projectId
+ * is empty or invalid, it will fetch a new one from the Antigravity API.
+ * This matches CLIProxyAPI v6.6.108's ensureAntigravityProjectID behavior.
  */
 export async function refreshTokens(refreshToken: string, projectId: string): Promise<AntigravityTokens> {
     const startTime = Date.now();
@@ -219,12 +223,22 @@ export async function refreshTokens(refreshToken: string, projectId: string): Pr
     // Get user info for email
     const userInfo = await fetchUserInfo(data.access_token);
 
+    // Ensure project_id is valid (matches CLIProxyAPI v6.6.108 ensureAntigravityProjectID)
+    // If projectId is empty or the default fallback, try to fetch a real one
+    let effectiveProjectId = projectId;
+    if (!effectiveProjectId || effectiveProjectId === DEFAULT_PROJECT_ID) {
+        const fetchedProjectId = await fetchProjectId(data.access_token);
+        if (fetchedProjectId) {
+            effectiveProjectId = fetchedProjectId;
+        }
+    }
+
     return {
         access_token: data.access_token,
         refresh_token: data.refresh_token || refreshToken, // Keep old refresh token if not provided
         expires_at: startTime + data.expires_in * 1000,
         email: userInfo.email,
-        project_id: projectId,
+        project_id: effectiveProjectId || DEFAULT_PROJECT_ID,
     };
 }
 
