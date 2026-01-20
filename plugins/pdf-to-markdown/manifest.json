@@ -1,0 +1,71 @@
+{
+    "id": "pdf-to-markdown",
+    "name": "PDF to Markdown",
+    "version": "1.0.0",
+    "description": "Automatically converts PDF files to Markdown using MinerU API and injects content into chat context",
+    "author": "Alma Plugins",
+    "main": "main.ts",
+    "engines": {
+        "alma": ">=0.1.0"
+    },
+    "activationEvents": ["onStartup"],
+    "contributes": {
+        "commands": [
+            {
+                "id": "pdf-to-markdown.convert",
+                "title": "Convert PDF to Markdown"
+            },
+            {
+                "id": "pdf-to-markdown.toggle",
+                "title": "Toggle PDF Auto-Conversion"
+            },
+            {
+                "id": "pdf-to-markdown.clearCache",
+                "title": "Clear PDF Conversion Cache"
+            }
+        ],
+        "settings": {
+            "pdf-to-markdown.enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable automatic PDF to Markdown conversion"
+            },
+            "pdf-to-markdown.modelVersion": {
+                "type": "string",
+                "default": "vlm",
+                "enum": ["vlm", "doclayout_yolo"],
+                "description": "MinerU model version to use for extraction"
+            },
+            "pdf-to-markdown.enableFormula": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable formula recognition"
+            },
+            "pdf-to-markdown.enableTable": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable table recognition"
+            },
+            "pdf-to-markdown.layoutModel": {
+                "type": "string",
+                "default": "doclayout_yolo",
+                "description": "Layout detection model"
+            },
+            "pdf-to-markdown.language": {
+                "type": "string",
+                "default": "ch",
+                "description": "OCR language (ch for Chinese, en for English)"
+            },
+            "pdf-to-markdown.cacheEnabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Cache converted PDFs to avoid re-conversion"
+            },
+            "pdf-to-markdown.maxFileSizeMB": {
+                "type": "number",
+                "default": 50,
+                "description": "Maximum PDF file size in MB"
+            }
+        }
+    }
+}
