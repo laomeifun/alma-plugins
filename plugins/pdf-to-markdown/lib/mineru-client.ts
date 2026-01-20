@@ -2,7 +2,7 @@
  * MinerU API Client
  * 
  * Client for interacting with the MinerU PDF extraction API.
- * Handles task creation, status polling, and result retrieval.
+ * API Documentation: https://mineru.net/apiManage/docs
  */
 
 import type {
@@ -10,7 +10,7 @@ import type {
     CreateTaskData,
     TaskQueryData,
     ApiResponse,
-    UploadFileData,
+    BatchUploadData,
     ConversionResult,
     ModelVersion,
 } from './types';
@@ -20,8 +20,8 @@ import type {
 // ============================================================================
 
 const MINERU_API_BASE = 'https://mineru.net/api/v4';
-const POLL_INTERVAL_MS = 2000; // 2 seconds
-const MAX_POLL_ATTEMPTS = 300; // 10 minutes max wait time
+const POLL_INTERVAL_MS = 3000; // 3 seconds
+const MAX_POLL_ATTEMPTS = 200; // ~10 minutes max wait time
 
 // ============================================================================
 // MinerU API Client
@@ -56,6 +56,8 @@ export class MineruClient {
 
     /**
      * Create a PDF extraction task from URL
+     * 
+     * Note: enable_formula, enable_table, language only work with 'pipeline' model
      */
     async createTaskFromUrl(
         url: string,
@@ -63,25 +65,41 @@ export class MineruClient {
             modelVersion?: ModelVersion;
             enableFormula?: boolean;
             enableTable?: boolean;
-            layoutModel?: string;
             language?: string;
-            pageRange?: string;
+            pageRanges?: string;
+            dataId?: string;
         }
     ): Promise<string> {
+        const modelVersion = options?.modelVersion ?? 'vlm';
+        
+        // Build request - only include pipeline-specific options for pipeline model
         const request: CreateTaskRequest = {
             url,
-            model_version: options?.modelVersion ?? 'vlm',
-            enable_formula: options?.enableFormula ?? true,
-            enable_table: options?.enableTable ?? true,
-            layout_model: options?.layoutModel ?? 'doclayout_yolo',
-            language: options?.language ?? 'ch',
+            model_version: modelVersion,
         };
 
-        if (options?.pageRange) {
-            request.page_range = options.pageRange;
+        // These options only work with pipeline model
+        if (modelVersion === 'pipeline') {
+            if (options?.enableFormula !== undefined) {
+                request.enable_formula = options.enableFormula;
+            }
+            if (options?.enableTable !== undefined) {
+                request.enable_table = options.enableTable;
+            }
+            if (options?.language) {
+                request.language = options.language;
+            }
         }
 
-        this.logger.debug(`Creating task for URL: ${url}`);
+        if (options?.pageRanges) {
+            request.page_ranges = options.pageRanges;
+        }
+        if (options?.dataId) {
+            request.data_id = options.dataId;
+        }
+
+        this.logger.debug(`Creating task for URL: ${url}, model: ${modelVersion}`);
+        this.logger.debug(`Request body: ${JSON.stringify(request)}`);
 
         const response = await fetch(`${MINERU_API_BASE}/extract/task`, {
             method: 'POST',
@@ -89,15 +107,22 @@ export class MineruClient {
             body: JSON.stringify(request),
         });
 
+        const responseText = await response.text();
+        this.logger.debug(`Response: ${response.status} - ${responseText}`);
+
         if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Failed to create task: ${response.status} - ${errorText}`);
+            throw new Error(`Failed to create task: ${response.status} - ${responseText}`);
         }
 
-        const result: ApiResponse<CreateTaskData> = await response.json();
+        let result: ApiResponse<CreateTaskData>;
+        try {
+            result = JSON.parse(responseText);
+        } catch (e) {
+            throw new Error(`Invalid JSON response: ${responseText}`);
+        }
 
         if (result.code !== 0) {
-            throw new Error(`API error: ${result.msg}`);
+            throw new Error(`API error (${result.code}): ${result.msg}`);
         }
 
         if (!result.data?.task_id) {
@@ -109,7 +134,7 @@ export class MineruClient {
     }
 
     /**
-     * Upload a file and create extraction task
+     * Upload a local file and create extraction task using batch upload API
      */
     async uploadAndCreateTask(
         fileContent: Uint8Array,
@@ -118,91 +143,95 @@ export class MineruClient {
             modelVersion?: ModelVersion;
             enableFormula?: boolean;
             enableTable?: boolean;
-            layoutModel?: string;
             language?: string;
-            pageRange?: string;
+            pageRanges?: string;
+            dataId?: string;
         }
     ): Promise<string> {
-        // Step 1: Upload file
-        const formData = new FormData();
+        const modelVersion = options?.modelVersion ?? 'vlm';
+
+        // Step 1: Request upload URL
+        this.logger.debug(`Requesting upload URL for: ${filename}`);
+
+        const batchRequest: any = {
+            files: [
+                {
+                    name: filename,
+                    data_id: options?.dataId || `upload-${Date.now()}`,
+                }
+            ],
+            model_version: modelVersion,
+        };
+
+        // Add pipeline-specific options
+        if (modelVersion === 'pipeline') {
+            if (options?.enableFormula !== undefined) {
+                batchRequest.enable_formula = options.enableFormula;
+            }
+            if (options?.enableTable !== undefined) {
+                batchRequest.enable_table = options.enableTable;
+            }
+            if (options?.language) {
+                batchRequest.language = options.language;
+            }
+        }
+
+        const batchResponse = await fetch(`${MINERU_API_BASE}/file-urls/batch`, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify(batchRequest),
+        });
+
+        if (!batchResponse.ok) {
+            const errorText = await batchResponse.text();
+            throw new Error(`Failed to get upload URL: ${batchResponse.status} - ${errorText}`);
+        }
+
+        const batchResult: ApiResponse<BatchUploadData> = await batchResponse.json();
+
+        if (batchResult.code !== 0) {
+            throw new Error(`Batch API error: ${batchResult.msg}`);
+        }
+
+        if (!batchResult.data?.file_urls?.[0]) {
+            throw new Error('No upload URL in response');
+        }
+
+        const uploadUrl = batchResult.data.file_urls[0];
+        const batchId = batchResult.data.batch_id;
+
+        this.logger.debug(`Got upload URL, batch_id: ${batchId}`);
+
+        // Step 2: Upload file using PUT
         const arrayBuffer = fileContent.buffer.slice(
             fileContent.byteOffset,
             fileContent.byteOffset + fileContent.byteLength
         ) as ArrayBuffer;
-        const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
-        formData.append('file', blob, filename);
 
-        this.logger.debug(`Uploading file: ${filename}`);
-
-        const uploadResponse = await fetch(`${MINERU_API_BASE}/file/upload`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.apiKey}`,
-            },
-            body: formData,
+        const uploadResponse = await fetch(uploadUrl, {
+            method: 'PUT',
+            body: arrayBuffer,
         });
 
         if (!uploadResponse.ok) {
-            const errorText = await uploadResponse.text();
-            throw new Error(`Failed to upload file: ${uploadResponse.status} - ${errorText}`);
+            throw new Error(`Failed to upload file: ${uploadResponse.status}`);
         }
 
-        const uploadResult: ApiResponse<UploadFileData> = await uploadResponse.json();
+        this.logger.info(`File uploaded successfully, batch_id: ${batchId}`);
 
-        if (uploadResult.code !== 0) {
-            throw new Error(`Upload API error: ${uploadResult.msg}`);
-        }
-
-        if (!uploadResult.data?.file_id) {
-            throw new Error('No file_id in upload response');
-        }
-
-        const fileId = uploadResult.data.file_id;
-        this.logger.info(`File uploaded: ${fileId}`);
-
-        // Step 2: Create task with file_id
-        const request: CreateTaskRequest = {
-            file_id: fileId,
-            model_version: options?.modelVersion ?? 'vlm',
-            enable_formula: options?.enableFormula ?? true,
-            enable_table: options?.enableTable ?? true,
-            layout_model: options?.layoutModel ?? 'doclayout_yolo',
-            language: options?.language ?? 'ch',
-        };
-
-        if (options?.pageRange) {
-            request.page_range = options.pageRange;
-        }
-
-        const taskResponse = await fetch(`${MINERU_API_BASE}/extract/task`, {
-            method: 'POST',
-            headers: this.getHeaders(),
-            body: JSON.stringify(request),
-        });
-
-        if (!taskResponse.ok) {
-            const errorText = await taskResponse.text();
-            throw new Error(`Failed to create task: ${taskResponse.status} - ${errorText}`);
-        }
-
-        const taskResult: ApiResponse<CreateTaskData> = await taskResponse.json();
-
-        if (taskResult.code !== 0) {
-            throw new Error(`Task API error: ${taskResult.msg}`);
-        }
-
-        if (!taskResult.data?.task_id) {
-            throw new Error('No task_id in response');
-        }
-
-        this.logger.info(`Task created: ${taskResult.data.task_id}`);
-        return taskResult.data.task_id;
+        // Return batch_id - the system will auto-submit the task
+        return `batch:${batchId}`;
     }
 
     /**
      * Query task status
      */
     async queryTask(taskId: string): Promise<TaskQueryData> {
+        // Handle batch tasks
+        if (taskId.startsWith('batch:')) {
+            return this.queryBatchTask(taskId.slice(6));
+        }
+
         const response = await fetch(`${MINERU_API_BASE}/extract/task/${taskId}`, {
             method: 'GET',
             headers: this.getHeaders(),
@@ -227,31 +256,87 @@ export class MineruClient {
     }
 
     /**
+     * Query batch task status
+     */
+    private async queryBatchTask(batchId: string): Promise<TaskQueryData> {
+        const response = await fetch(`${MINERU_API_BASE}/extract-results/batch/${batchId}`, {
+            method: 'GET',
+            headers: this.getHeaders(),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to query batch: ${response.status} - ${errorText}`);
+        }
+
+        const result: ApiResponse<{
+            batch_id: string;
+            extract_result: Array<{
+                file_name: string;
+                state: string;
+                full_zip_url?: string;
+                err_msg?: string;
+                extract_progress?: {
+                    extracted_pages: number;
+                    total_pages: number;
+                    start_time: string;
+                };
+            }>;
+        }> = await response.json();
+
+        if (result.code !== 0) {
+            throw new Error(`Batch query API error: ${result.msg}`);
+        }
+
+        // Get first result
+        const firstResult = result.data?.extract_result?.[0];
+        if (!firstResult) {
+            return {
+                task_id: batchId,
+                state: 'pending',
+            };
+        }
+
+        return {
+            task_id: batchId,
+            state: firstResult.state as any,
+            full_zip_url: firstResult.full_zip_url,
+            err_msg: firstResult.err_msg,
+            extract_progress: firstResult.extract_progress,
+        };
+    }
+
+    /**
      * Wait for task completion and return result
      */
     async waitForCompletion(
         taskId: string,
-        onProgress?: (status: string, progress?: number) => void
+        onProgress?: (state: string, progress?: { extracted: number; total: number }) => void
     ): Promise<TaskQueryData> {
         let attempts = 0;
 
         while (attempts < MAX_POLL_ATTEMPTS) {
             const status = await this.queryTask(taskId);
 
-            if (onProgress) {
-                onProgress(status.status, status.progress);
+            if (onProgress && status.extract_progress) {
+                onProgress(status.state, {
+                    extracted: status.extract_progress.extracted_pages,
+                    total: status.extract_progress.total_pages,
+                });
+            } else if (onProgress) {
+                onProgress(status.state);
             }
 
-            if (status.status === 'done') {
+            if (status.state === 'done') {
                 this.logger.info(`Task ${taskId} completed`);
                 return status;
             }
 
-            if (status.status === 'failed') {
-                throw new Error(`Task failed: ${status.error_msg || 'Unknown error'}`);
+            if (status.state === 'failed') {
+                throw new Error(`Task failed: ${status.err_msg || 'Unknown error'}`);
             }
 
-            this.logger.debug(`Task ${taskId} status: ${status.status}, progress: ${status.progress}%`);
+            this.logger.debug(`Task ${taskId} state: ${status.state}`);
             await this.sleep(POLL_INTERVAL_MS);
             attempts++;
         }
@@ -260,18 +345,132 @@ export class MineruClient {
     }
 
     /**
-     * Download markdown result
+     * Download and extract markdown from ZIP result
      */
-    async downloadMarkdown(mdUrl: string): Promise<string> {
-        this.logger.debug(`Downloading markdown from: ${mdUrl}`);
+    async downloadMarkdown(zipUrl: string): Promise<string> {
+        this.logger.debug(`Downloading result from: ${zipUrl}`);
 
-        const response = await fetch(mdUrl);
+        // The ZIP contains markdown files - we need to fetch and extract
+        // For now, we'll try to get the markdown directly
+        // MinerU returns a ZIP with structure: auto/{filename}.md
+        
+        const response = await fetch(zipUrl);
 
         if (!response.ok) {
-            throw new Error(`Failed to download markdown: ${response.status}`);
+            throw new Error(`Failed to download result: ${response.status}`);
         }
 
-        return await response.text();
+        // Get the ZIP content
+        const zipBuffer = await response.arrayBuffer();
+        
+        // Simple ZIP extraction for markdown file
+        // ZIP files have a specific structure - we look for .md files
+        const markdown = await this.extractMarkdownFromZip(new Uint8Array(zipBuffer));
+        
+        return markdown;
+    }
+
+    /**
+     * Extract markdown content from ZIP buffer
+     * Simple implementation that looks for .md files in the ZIP
+     */
+    private async extractMarkdownFromZip(zipData: Uint8Array): Promise<string> {
+        // ZIP file structure:
+        // Local file header signature: 0x04034b50 (PK\x03\x04)
+        // We'll look for .md files and extract their content
+        
+        const decoder = new TextDecoder('utf-8');
+        const markdownContents: string[] = [];
+        
+        let offset = 0;
+        while (offset < zipData.length - 4) {
+            // Check for local file header signature
+            if (zipData[offset] === 0x50 && zipData[offset + 1] === 0x4b &&
+                zipData[offset + 2] === 0x03 && zipData[offset + 3] === 0x04) {
+                
+                // Parse local file header
+                const compressionMethod = zipData[offset + 8] | (zipData[offset + 9] << 8);
+                const compressedSize = zipData[offset + 18] | (zipData[offset + 19] << 8) |
+                                       (zipData[offset + 20] << 16) | (zipData[offset + 21] << 24);
+                const uncompressedSize = zipData[offset + 22] | (zipData[offset + 23] << 8) |
+                                         (zipData[offset + 24] << 16) | (zipData[offset + 25] << 24);
+                const fileNameLength = zipData[offset + 26] | (zipData[offset + 27] << 8);
+                const extraFieldLength = zipData[offset + 28] | (zipData[offset + 29] << 8);
+                
+                const fileNameStart = offset + 30;
+                const fileName = decoder.decode(zipData.slice(fileNameStart, fileNameStart + fileNameLength));
+                
+                const dataStart = fileNameStart + fileNameLength + extraFieldLength;
+                
+                // Check if this is a markdown file
+                if (fileName.endsWith('.md') && compressionMethod === 0) {
+                    // Uncompressed (STORE method)
+                    const content = decoder.decode(zipData.slice(dataStart, dataStart + uncompressedSize));
+                    markdownContents.push(content);
+                } else if (fileName.endsWith('.md') && compressionMethod === 8) {
+                    // DEFLATE compression - we need to decompress
+                    // For simplicity, we'll try to use the browser's DecompressionStream if available
+                    try {
+                        const compressedData = zipData.slice(dataStart, dataStart + compressedSize);
+                        const decompressed = await this.inflateData(compressedData);
+                        const content = decoder.decode(decompressed);
+                        markdownContents.push(content);
+                    } catch (e) {
+                        this.logger.warn(`Failed to decompress ${fileName}: ${e}`);
+                    }
+                }
+                
+                // Move to next file
+                offset = dataStart + compressedSize;
+            } else {
+                offset++;
+            }
+        }
+        
+        if (markdownContents.length === 0) {
+            throw new Error('No markdown files found in ZIP');
+        }
+        
+        return markdownContents.join('\n\n---\n\n');
+    }
+
+    /**
+     * Inflate (decompress) DEFLATE data
+     */
+    private async inflateData(data: Uint8Array): Promise<Uint8Array> {
+        // Try using DecompressionStream (modern browsers)
+        if (typeof DecompressionStream !== 'undefined') {
+            const ds = new DecompressionStream('deflate-raw');
+            const writer = ds.writable.getWriter();
+            const buffer = data.buffer.slice(
+                data.byteOffset,
+                data.byteOffset + data.byteLength
+            ) as ArrayBuffer;
+            writer.write(buffer);
+            writer.close();
+            
+            const reader = ds.readable.getReader();
+            const chunks: Uint8Array[] = [];
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+            }
+            
+            // Combine chunks
+            const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            const result = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const chunk of chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
+            }
+            
+            return result;
+        }
+        
+        throw new Error('DecompressionStream not available');
     }
 
     /**
@@ -283,10 +482,9 @@ export class MineruClient {
             modelVersion?: ModelVersion;
             enableFormula?: boolean;
             enableTable?: boolean;
-            layoutModel?: string;
             language?: string;
-            pageRange?: string;
-            onProgress?: (status: string, progress?: number) => void;
+            pageRanges?: string;
+            onProgress?: (state: string, progress?: { extracted: number; total: number }) => void;
         }
     ): Promise<ConversionResult> {
         try {
@@ -296,12 +494,12 @@ export class MineruClient {
             // Wait for completion
             const result = await this.waitForCompletion(taskId, options?.onProgress);
 
-            if (!result.md_url) {
-                throw new Error('No markdown URL in result');
+            if (!result.full_zip_url) {
+                throw new Error('No result URL in response');
             }
 
-            // Download markdown
-            const markdown = await this.downloadMarkdown(result.md_url);
+            // Download and extract markdown
+            const markdown = await this.downloadMarkdown(result.full_zip_url);
 
             return {
                 success: true,
@@ -328,10 +526,9 @@ export class MineruClient {
             modelVersion?: ModelVersion;
             enableFormula?: boolean;
             enableTable?: boolean;
-            layoutModel?: string;
             language?: string;
-            pageRange?: string;
-            onProgress?: (status: string, progress?: number) => void;
+            pageRanges?: string;
+            onProgress?: (state: string, progress?: { extracted: number; total: number }) => void;
         }
     ): Promise<ConversionResult> {
         try {
@@ -341,12 +538,12 @@ export class MineruClient {
             // Wait for completion
             const result = await this.waitForCompletion(taskId, options?.onProgress);
 
-            if (!result.md_url) {
-                throw new Error('No markdown URL in result');
+            if (!result.full_zip_url) {
+                throw new Error('No result URL in response');
             }
 
-            // Download markdown
-            const markdown = await this.downloadMarkdown(result.md_url);
+            // Download and extract markdown
+            const markdown = await this.downloadMarkdown(result.full_zip_url);
 
             return {
                 success: true,

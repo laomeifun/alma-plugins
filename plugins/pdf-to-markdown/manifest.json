@@ -58,29 +58,24 @@
                 },
                 "pdf-to-markdown.modelVersion": {
                     "type": "string",
-                    "enum": ["vlm", "doclayout_yolo"],
+                    "enum": ["vlm", "pipeline"],
                     "default": "vlm",
-                    "description": "MinerU model version to use for extraction"
+                    "description": "MinerU model version: vlm (Vision Language Model, recommended) or pipeline (traditional)"
                 },
                 "pdf-to-markdown.enableFormula": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Enable formula recognition"
+                    "description": "Enable formula recognition (only for pipeline model)"
                 },
                 "pdf-to-markdown.enableTable": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Enable table recognition"
-                },
-                "pdf-to-markdown.layoutModel": {
-                    "type": "string",
-                    "default": "doclayout_yolo",
-                    "description": "Layout detection model"
+                    "description": "Enable table recognition (only for pipeline model)"
                 },
                 "pdf-to-markdown.language": {
                     "type": "string",
                     "default": "ch",
-                    "description": "OCR language (ch for Chinese, en for English)"
+                    "description": "OCR language: ch (Chinese), en (English), etc. (only for pipeline model)"
                 },
                 "pdf-to-markdown.cacheEnabled": {
                     "type": "boolean",

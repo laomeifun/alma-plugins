@@ -48,10 +48,9 @@ export async function activate(context: PluginContext): Promise<PluginActivation
      */
     const getSettings = (): PdfToMarkdownSettings => ({
         enabled: settings.get<boolean>('pdf-to-markdown.enabled', true),
-        modelVersion: settings.get<'vlm' | 'doclayout_yolo'>('pdf-to-markdown.modelVersion', 'vlm'),
+        modelVersion: settings.get<'vlm' | 'pipeline'>('pdf-to-markdown.modelVersion', 'vlm'),
         enableFormula: settings.get<boolean>('pdf-to-markdown.enableFormula', true),
         enableTable: settings.get<boolean>('pdf-to-markdown.enableTable', true),
-        layoutModel: settings.get<string>('pdf-to-markdown.layoutModel', 'doclayout_yolo'),
         language: settings.get<string>('pdf-to-markdown.language', 'ch'),
         cacheEnabled: settings.get<boolean>('pdf-to-markdown.cacheEnabled', true),
         maxFileSizeMB: settings.get<number>('pdf-to-markdown.maxFileSizeMB', 50),
@@ -178,7 +177,6 @@ export async function activate(context: PluginContext): Promise<PluginActivation
             modelVersion: config.modelVersion,
             enableFormula: config.enableFormula,
             enableTable: config.enableTable,
-            layoutModel: config.layoutModel,
             language: config.language,
         };
 

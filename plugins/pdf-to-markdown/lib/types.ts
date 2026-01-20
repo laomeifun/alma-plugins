@@ -11,8 +11,11 @@
 
 /**
  * Supported model versions for PDF extraction
+ * - pipeline: Traditional layout detection model
+ * - vlm: Vision Language Model (recommended)
+ * - MinerU-HTML: For HTML files only
  */
-export type ModelVersion = 'vlm' | 'doclayout_yolo';
+export type ModelVersion = 'pipeline' | 'vlm' | 'MinerU-HTML';
 
 /**
  * File source type
@@ -23,30 +26,41 @@ export type FileSource = 'url' | 'file';
  * Request to create a PDF extraction task
  */
 export interface CreateTaskRequest {
-    /** URL of the PDF file (when using URL source) */
-    url?: string;
-    /** File ID from upload (when using file source) */
-    file_id?: string;
-    /** Model version to use */
+    /** URL of the PDF file */
+    url: string;
+    /** Model version to use (default: pipeline) */
     model_version?: ModelVersion;
-    /** Enable formula recognition */
+    /** Enable OCR (only for pipeline model) */
+    is_ocr?: boolean;
+    /** Enable formula recognition (only for pipeline model) */
     enable_formula?: boolean;
-    /** Enable table recognition */
+    /** Enable table recognition (only for pipeline model) */
     enable_table?: boolean;
-    /** Layout detection model */
-    layout_model?: string;
-    /** OCR language */
+    /** OCR language (only for pipeline model) */
     language?: string;
-    /** Page range to extract (e.g., "1-5" or "1,3,5") */
-    page_range?: string;
+    /** Data ID for tracking */
+    data_id?: string;
+    /** Page ranges (e.g., "1-5" or "2,4-6") */
+    page_ranges?: string;
+    /** Extra export formats */
+    extra_formats?: string[];
 }
 
 /**
- * Request to upload a file
+ * Request for batch file upload
  */
-export interface UploadFileRequest {
-    file: Blob | File;
-    filename: string;
+export interface BatchUploadRequest {
+    files: Array<{
+        name: string;
+        data_id?: string;
+        is_ocr?: boolean;
+        page_ranges?: string;
+    }>;
+    model_version?: ModelVersion;
+    enable_formula?: boolean;
+    enable_table?: boolean;
+    language?: string;
+    extra_formats?: string[];
 }
 
 // ============================================================================
@@ -59,6 +73,7 @@ export interface UploadFileRequest {
 export interface ApiResponse<T = unknown> {
     code: number;
     msg: string;
+    trace_id?: string;
     data?: T;
 }
 
@@ -70,30 +85,42 @@ export interface CreateTaskData {
 }
 
 /**
- * File upload response data
+ * Batch upload response data
  */
-export interface UploadFileData {
-    file_id: string;
+export interface BatchUploadData {
+    batch_id: string;
+    file_urls: string[];
 }
 
 /**
  * Task status values
  */
-export type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
+export type TaskState = 'pending' | 'running' | 'done' | 'failed' | 'converting' | 'waiting-file';
+
+/**
+ * Extract progress info
+ */
+export interface ExtractProgress {
+    extracted_pages: number;
+    total_pages: number;
+    start_time: string;
+}
 
 /**
  * Task query response data
  */
 export interface TaskQueryData {
     task_id: string;
-    status: TaskStatus;
-    progress?: number;
-    /** Full result URL (available when status is 'done') */
-    full_result_url?: string;
-    /** Markdown result URL */
-    md_url?: string;
-    /** Error message (when status is 'failed') */
-    error_msg?: string;
+    /** Task state */
+    state: TaskState;
+    /** Data ID if provided */
+    data_id?: string;
+    /** Full ZIP result URL (available when state is 'done') */
+    full_zip_url?: string;
+    /** Error message (when state is 'failed') */
+    err_msg?: string;
+    /** Extract progress (when state is 'running') */
+    extract_progress?: ExtractProgress;
 }
 
 /**
@@ -113,9 +140,11 @@ export interface BatchTaskQueryData {
 export interface PdfToMarkdownSettings {
     enabled: boolean;
     modelVersion: ModelVersion;
+    /** Enable formula recognition (only for pipeline model) */
     enableFormula: boolean;
+    /** Enable table recognition (only for pipeline model) */
     enableTable: boolean;
-    layoutModel: string;
+    /** OCR language (only for pipeline model) */
     language: string;
     cacheEnabled: boolean;
     maxFileSizeMB: number;
