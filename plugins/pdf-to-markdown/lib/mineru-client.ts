@@ -108,10 +108,17 @@ export class MineruClient {
         });
 
         const responseText = await response.text();
-        this.logger.debug(`Response: ${response.status} - ${responseText}`);
+        this.logger.debug(`Response status: ${response.status}`);
+        this.logger.debug(`Response body: ${responseText}`);
 
         if (!response.ok) {
-            throw new Error(`Failed to create task: ${response.status} - ${responseText}`);
+            // Try to parse error details
+            try {
+                const errorJson = JSON.parse(responseText);
+                throw new Error(`API error (${errorJson.code}): ${errorJson.msg || responseText}`);
+            } catch (e) {
+                throw new Error(`Failed to create task: ${response.status} - ${responseText}`);
+            }
         }
 
         let result: ApiResponse<CreateTaskData>;
@@ -122,7 +129,15 @@ export class MineruClient {
         }
 
         if (result.code !== 0) {
-            throw new Error(`API error (${result.code}): ${result.msg}`);
+            // Provide more helpful error messages based on error code
+            const errorMessages: Record<number, string> = {
+                [-500]: 'Invalid parameters - check request format',
+                [-60002]: 'Invalid file format - ensure URL points to a valid PDF',
+                [-60008]: 'URL timeout - the URL may be inaccessible from China (GitHub, AWS, etc.)',
+                [-60018]: 'Daily limit reached - try again tomorrow',
+            };
+            const helpMessage = errorMessages[result.code] || '';
+            throw new Error(`API error (${result.code}): ${result.msg}${helpMessage ? ` - ${helpMessage}` : ''}`);
         }
 
         if (!result.data?.task_id) {
