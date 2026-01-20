@@ -129,6 +129,14 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         } else if (ref.isUrl) {
             cacheKey = await generateHash(ref.path);
         } else {
+            // Local file - check if workspace is available
+            if (!workspace || !workspace.readFile) {
+                return {
+                    success: false,
+                    error: 'Local file access requires workspace. Please use URL instead.',
+                };
+            }
+            
             // Read local file
             try {
                 fileContent = await workspace.readFile(ref.path);
